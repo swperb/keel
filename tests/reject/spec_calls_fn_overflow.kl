@@ -1,0 +1,8 @@
+// expect: V-OVERFLOW
+fn sq(x: i64) -> i64 {
+  return x * x;
+}
+lemma pos(x: i64)
+  ensures sq(x) >= 0
+{
+}

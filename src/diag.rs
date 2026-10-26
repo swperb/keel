@@ -101,7 +101,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
                        never part of a larger expression, because C does not fix the order operands and arguments are evaluated in.",
         "E-ARRAY" => "Array values (from `array(..)` or a call returning `[i64]`) may only appear as a `let` initializer or a `return` value.",
         "E-EFFECT" => "Only `io fn` functions may call `print` or other `io fn` functions. `par` branches must be pure.",
-        "E-SPEC" => "Specifications (requires/ensures/invariant/decreases/assert) are pure logic: they may call `len`, `count` and `spec fn`s. `old(e)` is allowed in ensures, invariants and asserts. \
+        "E-SPEC" => "Specifications (requires/ensures/invariant/decreases/assert) are pure logic: they may call `len`, `count`, `spec fn`s, and any `fn` that is pure, loop-free, non-recursive and takes no `&mut` (its body is lifted to a definition). `old(e)` is allowed in ensures, invariants and asserts. \
                      `result` is only valid in `ensures`; `forall`/`exists` only in specifications.",
         "E-MUT" => "Only `var` locals can be reassigned; only owned arrays or `&mut` parameters can be written.",
         "E-RETURN" => "A function with a return type must end in `return` on every path.",

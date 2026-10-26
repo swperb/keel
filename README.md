@@ -190,6 +190,7 @@ the pairwise form, which typically proves in under a second.
 - Functions: `fn` is pure; `io fn` may print and call other `io fn`.
 - Contracts: `requires`, `ensures` (with `result`), `decreases` (required for recursion).
 - Ghost code: `spec fn` (single-expression math definitions, spec-only `if c { a } else { b }`), `lemma` (no loops; prove by cases, `assert` and recursion).
+- Specs may also call an ordinary `fn` that is pure, loop-free and non-recursive, takes no `&mut`, and returns `i64`, `bool` or a struct/enum: write a helper like `tiles(mode)` once and use it in both code and contracts. Its body (`let`, `var`, `if`, `return`) is lifted to a definition.
 - Statements: `let`, `var`, assignment, `xs[i] = v`, `if`/`else`, `while ... invariant ... decreases ...`, `return`, `assert`, `par`.
 - Specs: `forall x in lo..hi { P }`, `forall v: i64 { P }` (every i64), `exists`, `==>`, `len(xs)`.
 - Multisets: `count(&xs, lo, hi, v)` is the number of times `v` occurs in `xs[lo..hi]`; `old(e)` in `ensures`, invariants and asserts is `e` on function entry. Together they state permutations: `ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }`.
@@ -203,7 +204,12 @@ the pairwise form, which typically proves in under a second.
 and a path condition. Loops are cut with their invariants: prove on entry,
 havoc what the body modifies, assume the invariant, prove it is preserved and
 that the measure decreases. Calls are modular: prove the callee's `requires`,
-assume its `ensures`. Integer semantics match C exactly (truncating division),
+assume its `ensures` (and, for a pure loop-free `fn`, its lifted definition:
+the verified body never overflows, so its mathematical reading is exact).
+Each function's query holds only the `spec fn` definitions it reaches
+through its own code and contracts and those of its callees, so adding a
+definition elsewhere in a file cannot change whether an existing proof
+passes. Integer semantics match C exactly (truncating division),
 and because overflow is proven impossible, mathematical integers in the solver
 equal machine integers in the binary. Each function's obligations go to its
 own Z3 process, all in parallel. Any obligation the solver gives up on is

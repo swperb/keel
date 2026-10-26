@@ -37,6 +37,7 @@ enum Ctx {
 struct Checker<'a> {
     prog: &'a Program,
     sigs: &'a HashMap<String, Sig>,
+    funcs: &'a HashMap<String, &'a Func>,
     f: &'a Func,
     /// True inside a lemma body (ghost code).
     ghost: bool,
@@ -321,8 +322,16 @@ impl<'a> Checker<'a> {
             return Ty::I64;
         }
         let callee_kind = self.sigs.get(name).map(|s| s.kind);
-        if ctx != Ctx::Code && callee_kind != Some(FnKind::Spec) {
-            self.err(Diag::new("E-SPEC", span, format!("specifications may only call 'spec fn' functions and len, not '{}'", name)));
+        // A pure, loop-free fn is lifted to a definition (see lift.rs).
+        let lifted = ctx != Ctx::Code && callee_kind == Some(FnKind::Code) && crate::lift::why_not(self.funcs, name).is_none();
+        if ctx != Ctx::Code && callee_kind != Some(FnKind::Spec) && !lifted {
+            let mut d = Diag::new("E-SPEC", span, format!("specifications may only call spec fns, len, count, and fns that are pure and loop-free, not '{}'", name));
+            if callee_kind == Some(FnKind::Code) {
+                if let Some(why) = crate::lift::why_not(self.funcs, name) {
+                    d = d.hint(format!("{}; write a 'spec fn' for it, and prove they agree with ensures result == spec(..)", why));
+                }
+            }
+            self.err(d);
             return Ty::I64;
         }
         if ctx == Ctx::Code && callee_kind == Some(FnKind::Spec) {
@@ -360,7 +369,7 @@ impl<'a> Checker<'a> {
         if sig.kind == FnKind::Lemma {
             self.err(Diag::new("E-SPEC", span, format!("lemma '{}' can only be invoked as a statement", name)));
         }
-        if self.ghost && sig.kind == FnKind::Code {
+        if self.ghost && sig.kind == FnKind::Code && !lifted {
             self.err(Diag::new("E-SPEC", span, format!("lemmas may not call executable function '{}'", name)));
         }
         if sig.io && !self.f.io {
@@ -742,6 +751,7 @@ fn check_types(prog: &Program, diags: &mut Vec<Diag>) {
 pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
     let funcs = &prog.funcs;
     let sigs = sigs(funcs);
+    let fmap: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
     let mut diags = vec![];
     check_types(prog, &mut diags);
     let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
@@ -751,7 +761,7 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
             diags.push(Diag::new("E-NAME", f.span, format!("function '{}' is already defined", f.name)));
         }
         let ghost = f.kind != FnKind::Code;
-        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false };
+        let mut c = Checker { prog, sigs: &sigs, funcs: &fmap, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false };
         for p in &f.params {
             if p.ty == Ty::Arr {
                 c.err(Diag::new("E-TYPE", p.span, format!("parameter '{}' cannot own an array; take &[i64] or &mut [i64]", p.name)));

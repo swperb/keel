@@ -63,6 +63,9 @@ write `a + (b * c)`. `a && b || c` is an error. Chains of one operator are fine
 - `(s as Shape.Circle).r` reads a payload in specs; in code use `match`.
 - `spec fn f(..) -> i64 { <expr> }` defines math usable only in specs; its body
   is one expression and may use `if c { a } else { b }`.
+- Specs may also call a plain `fn` that has no loops, no recursion and no
+  `&mut` parameters (for example `ensures result == tiles(mode) * 512`); no
+  duplicate `spec fn` is needed for such helpers.
 - `lemma l(..) requires .. ensures .. { .. }` proves a fact; call it as a
   statement `l(args);` to use the fact. Recursive lemmas are induction.
 

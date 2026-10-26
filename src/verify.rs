@@ -510,7 +510,9 @@ impl<'a> Gen<'a> {
         }
         // The callee's pre-state, for `old(..)` in its ensures.
         let pre_call = cs.vars.clone();
-        let check_pre = g.kind != FnKind::Spec || self.wf;
+        // A fn called from a specification stands for its lifted definition.
+        let as_spec = g.kind == FnKind::Spec || (spec && g.kind == FnKind::Code);
+        let check_pre = !as_spec || self.wf;
         if check_pre {
             for r in &g.requires {
                 let goal = self.ex(&mut cs, r, true);
@@ -529,7 +531,7 @@ impl<'a> Gen<'a> {
                 );
             }
         }
-        if g.kind == FnKind::Spec {
+        if as_spec {
             return Out::Scalar(app(&format!("sf.{}", name), &flat));
         }
         for (an, pn, r) in mut_args {
@@ -567,6 +569,12 @@ impl<'a> Gen<'a> {
             t => {
                 let r = self.fresh(&format!("{}.ret", name), t, st);
                 cs.vars.insert("result".into(), V { ty: t, smt: r.clone(), len: None });
+                // A liftable fn computes exactly its lifted definition, and
+                // its requires were just checked, so the caller learns the
+                // value itself, not only the ensures.
+                if g.kind == FnKind::Code && crate::lift::why_not(self.funcs, name).is_none() {
+                    st.pc.push(format!("(= {} {})", r, app(&format!("sf.{}", name), &flat)));
+                }
                 Out::Scalar(r)
             }
         };
@@ -970,7 +978,7 @@ fn calls_block(b: &Block, out: &mut Vec<String>) {
 /// bodies of those spec fns, transitively. Only these axioms go into `f`'s
 /// solver query, so a definition elsewhere in the file cannot change
 /// whether `f` proves. Leaving axioms out only weakens assumptions.
-fn spec_deps(map: &HashMap<String, &Func>, f: &Func) -> std::collections::HashSet<String> {
+fn spec_deps(map: &HashMap<String, &Func>, lifted: &[Func], f: &Func) -> std::collections::HashSet<String> {
     let mut seen = std::collections::HashSet::new();
     let mut specs = std::collections::HashSet::new();
     let mut work = vec![];
@@ -985,6 +993,9 @@ fn spec_deps(map: &HashMap<String, &Func>, f: &Func) -> std::collections::HashSe
         if g.kind == FnKind::Spec {
             specs.insert(name);
             calls_block(&g.body, &mut work);
+        } else if let Some(l) = lifted.iter().find(|l| l.name == name) {
+            calls_block(&l.body, &mut work);
+            specs.insert(name);
         }
     }
     specs
@@ -993,7 +1004,7 @@ fn spec_deps(map: &HashMap<String, &Func>, f: &Func) -> std::collections::HashSe
 /// SMT declarations shared by every function: datatypes for structs and
 /// enums, and spec fns with their definitional axioms. With `only`, axioms
 /// are limited to those spec fns (every spec fn is still declared).
-fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool, only: Option<&std::collections::HashSet<String>>) -> String {
+fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func], axioms: bool, only: Option<&std::collections::HashSet<String>>) -> String {
     let mut s = String::from(PRELUDE);
     if uses_count() {
         s += COUNT_DECLS;
@@ -1029,7 +1040,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool, on
         s += &format!("(declare-datatypes ({}) ({}))\n", heads.join(" "), bodies.join(" "));
     }
     // Declare all spec fns first so axioms may reference each other.
-    let specs: Vec<&Func> = prog.funcs.iter().filter(|f| f.kind == FnKind::Spec).collect();
+    let specs: Vec<&Func> = prog.funcs.iter().filter(|f| f.kind == FnKind::Spec).chain(lifted).collect();
     for f in &specs {
         let mut sorts = vec![];
         for p in &f.params {
@@ -1370,13 +1381,15 @@ pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String>
     let funcs = &prog.funcs;
     USES_COUNT.store(format!("{:?}", funcs).contains("Call(\"count\""), Ordering::Relaxed);
     let map: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
+    // Pure, loop-free fns as definitions, for specifications that call them.
+    let lifted: Vec<Func> = funcs.iter().filter(|f| f.kind == FnKind::Code && crate::lift::why_not(&map, &f.name).is_none()).map(crate::lift::as_spec).collect();
     // Phase 1: spec fn definitions (no axioms). Phase 2: everything else,
     // only once every definition is known to be well-founded.
     let (specs, rest): (Vec<&Func>, Vec<&Func>) = funcs.iter().partition(|f| f.kind == FnKind::Spec);
     let mut total = VResult { diags: vec![], proved: 0, inconclusive: 0 };
     for (phase, axioms) in [(specs, false), (rest, true)] {
-        let bare = shared_prelude(prog, &map, false, None);
-        let r = run_phase(prog, &map, &phase, axioms, &bare, dump_dir)?;
+        let bare = shared_prelude(prog, &map, &lifted, false, None);
+        let r = run_phase(prog, &map, &lifted, &phase, axioms, &bare, dump_dir)?;
         total.proved += r.proved;
         total.inconclusive += r.inconclusive;
         total.diags.extend(r.diags);
@@ -1467,13 +1480,13 @@ fn loop_hint(looping: &Option<(Span, String, String)>) -> Option<String> {
     })
 }
 
-fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], axioms: bool, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
+fn run_phase(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func], funcs: &[&Func], axioms: bool, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
     let jobs: Vec<(Vec<String>, Vec<Obl>)> = funcs.iter().map(|f| gen_func(prog, map, f)).collect();
     let scripts: Vec<String> = jobs
         .iter()
         .zip(funcs)
         .map(|((d, o), f)| {
-            let prelude = if axioms { shared_prelude(prog, map, true, Some(&spec_deps(map, f))) } else { bare.to_string() };
+            let prelude = if axioms { shared_prelude(prog, map, lifted, true, Some(&spec_deps(map, lifted, f))) } else { bare.to_string() };
             build_script(&prelude, d, o, &(0..o.len()).collect::<Vec<_>>(), false)
         })
         .collect();
