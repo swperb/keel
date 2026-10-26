@@ -19,6 +19,7 @@
     <nav aria-label="Sections">
       <a href="#proofs">Proofs</a>
       <a href="#speed">Speed</a>
+      <a href="#break">Break it</a>
       <a href="#agents">Agents</a>
       <a href="#start">Get started</a>
     </nav>
@@ -133,6 +134,20 @@ merge(&amp;<span class="kw">mut</span> xs, &amp;<span class="kw">mut</span> tmp,
         </table>
       </div>
       <p class="note">A proof shows the code does what its <code>requires</code> and <code>ensures</code> lines say. It cannot show those lines say what you meant, so read them. They are a few lines, not the whole program.</p>
+    </div>
+  </section>
+
+  <section class="section" id="break">
+    <div class="container">
+      <span class="label">Break it</span>
+      <h2>Find a program the checker should have rejected.</h2>
+      <p>The whole promise rests on the verifier being right, so we want outsiders attacking it. If <code>keel check</code> accepts a program that then overflows, reads out of bounds, divides by zero, races, hangs, or breaks its own <code>ensures</code>, that is a soundness bug and the most useful report you can send.</p>
+      <ul class="features">
+        <li><h3>Small</h3><p>One <code>.kl</code> file, as short as you can make it.</p></li>
+        <li><h3>Accepted</h3><p>The <code>keel check</code> output showing it proved.</p></li>
+        <li><h3>Wrong</h3><p>What it did at run time instead.</p></li>
+      </ul>
+      <p class="dim">Every fix ships with your program as a regression test, and reporters are credited in the hall of fame. Attack ideas, the rules, and the report form are in <a href="https://github.com/swperb/keel/blob/main/BREAK_IT.md">BREAK_IT.md</a>.</p>
     </div>
   </section>
 

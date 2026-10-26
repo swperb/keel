@@ -1,0 +1,9 @@
+// expect: E-RECURSION
+// A spec fn that calls itself in its own requires crashed the verifier.
+spec fn f(n: i64) -> i64
+  requires f(n) == 0
+  decreases n
+{
+  0
+}
+io fn main() { print(1); }

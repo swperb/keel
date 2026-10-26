@@ -1,0 +1,10 @@
+// expect: E-BORROW
+// C does not fix the order in which arguments are evaluated, so a[0] may be
+// read before or after set7 writes it. The verifier assumed left to right.
+fn set7(xs: &mut [i64]) -> i64 requires len(xs) == 1 ensures xs[0] == 7 && result == 1 { xs[0] = 7; return 1; }
+fn second(a: i64, b: i64) -> i64 ensures result == b { return b; }
+io fn main() {
+  let a: [i64] = array(1, 0);
+  let x: i64 = second(set7(&mut a), a[0]);
+  print(100 / x);
+}

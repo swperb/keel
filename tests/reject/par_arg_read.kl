@@ -1,0 +1,15 @@
+// expect: E-BORROW
+// Every par branch's arguments are evaluated before any branch runs, but the
+// verifier used to check branches in sequence: it believed x == 7 here while
+// the program read a[0] before set7 wrote it and printed 0.
+fn set7(xs: &mut [i64]) -> i64 requires len(xs) == 1 ensures xs[0] == 7 { xs[0] = 7; return 0; }
+fn id(x: i64) -> i64 ensures result == x { return x; }
+io fn main() {
+  let a: [i64] = array(2, 0);
+  par {
+    let u: i64 = set7(&mut a[0..1]);
+    let x: i64 = id(a[0] + 0);
+  }
+  assert x == 7;
+  print(x);
+}

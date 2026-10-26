@@ -277,6 +277,9 @@ impl<'a> Gen<'a> {
                 let hv = self.ex(st, hi, true);
                 self.n += 1;
                 let q = format!("q.{}.{}", var, self.n);
+                // Also a constant, so obligations raised inside the body (spec
+                // fn calls) hold for an arbitrary in-range value of the variable.
+                self.decls.push(format!("(declare-const {} Int)", q));
                 st.vars.insert(var.clone(), V { ty: Ty::I64, smt: q.clone(), len: None });
                 let range = format!("(and (<= {} {}) (< {} {}))", lv, q, q, hv);
                 let bv = self.ex_under(st, &range, body, true);
@@ -589,16 +592,19 @@ impl<'a> Gen<'a> {
             }
             StmtK::Store { name, idx, val } => {
                 let iv = self.ex(st, idx, false);
-                let a = st.vars[name].clone();
+                let len = st.vars[name].len.clone().unwrap();
                 self.obl(
                     st,
                     "V-BOUNDS",
                     s.span,
-                    format!("(and (<= 0 {}) (< {} {}))", iv, iv, a.len.clone().unwrap()),
+                    format!("(and (<= 0 {}) (< {} {}))", iv, iv, len),
                     format!("write to '{}' may be out of bounds", name),
                     "prove 0 <= index < len(array) with a requires clause or loop invariant",
                 );
                 let vv = self.ex(st, val, false);
+                // Read the array only after the value: evaluating it may have
+                // changed the array (C stores into the array as it is then).
+                let a = st.vars[name].clone();
                 let a2 = self.fresh(name, Ty::Arr, st);
                 st.pc.push(format!("(= {} (store {} {} {}))", a2, a.smt, iv, vv));
                 st.vars.get_mut(name).unwrap().smt = a2;
@@ -967,6 +973,13 @@ fn build_script(prelude: &str, decls: &[String], obls: &[Obl], pick: &[usize], q
     script
 }
 
+/// The first solver error in an output, if any. Z3 skips a command it
+/// rejects and carries on, so an ill-formed fact or goal would otherwise be
+/// silently dropped. (A failed get-value after a proof is expected.)
+fn solver_error(out: &str) -> Option<String> {
+    out.lines().find(|l| l.starts_with("(error") && !l.contains("model is not available")).map(|l| l.to_string())
+}
+
 /// Map obligation index to (status, model text) from solver output.
 fn parse_results(out: &str) -> HashMap<usize, (String, String)> {
     let mut results: HashMap<usize, (String, String)> = HashMap::new();
@@ -1125,8 +1138,11 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let mut first: Vec<HashMap<usize, (String, String)>> = vec![];
+    let mut errors: Vec<Option<String>> = vec![];
     for out in outputs {
-        first.push(parse_results(&out?));
+        let out = out?;
+        errors.push(solver_error(&out));
+        first.push(parse_results(&out));
     }
     // Second pass for proof obligations the solver gave up on: retry without
     // quantified facts or definitional axioms. Dropping assumptions is sound
@@ -1137,19 +1153,31 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
         .zip(&first)
         .map(|((_, obls), res)| (0..obls.len()).filter(|&i| !obls[i].reach && res.get(&i).map(|r| r.0 != "sat" && r.0 != "unsat").unwrap_or(true)).collect())
         .collect();
-    let second: Vec<HashMap<usize, (String, String)>> = std::thread::scope(|s| {
+    let second: Vec<(HashMap<usize, (String, String)>, Option<String>)> = std::thread::scope(|s| {
         let hs: Vec<_> = jobs
             .iter()
             .zip(&retry)
             .map(|((d, o), pick)| {
-                s.spawn(move || if pick.is_empty() { HashMap::new() } else { run_z3(&build_script(bare, d, o, pick, true)).map(|out| parse_results(&out)).unwrap_or_default() })
+                s.spawn(move || {
+                    if pick.is_empty() {
+                        (HashMap::new(), None)
+                    } else {
+                        run_z3(&build_script(bare, d, o, pick, true)).map(|out| (parse_results(&out), solver_error(&out))).unwrap_or_default()
+                    }
+                })
             })
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
+    let (second, errors2): (Vec<HashMap<usize, (String, String)>>, Vec<Option<String>>) = second.into_iter().unzip();
     let mut diags = vec![];
     let mut proved = 0;
     let mut inconclusive = 0;
+    for (k, f) in funcs.iter().enumerate() {
+        if let Some(e) = errors[k].as_ref().or(errors2[k].as_ref()) {
+            diags.push(Diag::new("V-UNKNOWN", f.span, format!("solver rejected part of the proof script for '{}', so its results cannot be trusted: {}", f.name, e)).hint("this is a keel bug; please report it with the program"));
+        }
+    }
     for (((_, obls), res1), res2) in jobs.iter().zip(&first).zip(&second) {
         for (i, o) in obls.iter().enumerate() {
             let (status, model) = res1.get(&i).cloned().unwrap_or(("unknown".into(), String::new()));

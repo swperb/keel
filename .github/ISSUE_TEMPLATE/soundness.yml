@@ -1,0 +1,66 @@
+name: Soundness report
+description: keel check accepted a program that misbehaves at run time.
+title: "Soundness: "
+labels: ["soundness"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying to break Keel. See BREAK_IT.md for what counts. Spec mistakes, solver timeouts, stack depth and out-of-memory are not soundness bugs; compiler crashes go in an ordinary issue.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What goes wrong at run time
+      options:
+        - Integer overflow
+        - Out-of-bounds index or slice
+        - Division or remainder by zero
+        - Data race between par branches
+        - Does not terminate
+        - Violates its ensures or a proven assert
+        - Vacuous proof accepted (missed V-VACUOUS or V-DEAD)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: program
+    attributes:
+      label: Minimal program
+      description: The smallest .kl file that shows the problem.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: check
+    attributes:
+      label: keel check output
+      description: Shows the program was accepted.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: runtime
+    attributes:
+      label: Runtime evidence
+      description: The keel run output, or the emitted C (keel build file.kl -o prog --emit-c) with a sentence on what goes wrong.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have been rejected, and why
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: git rev-parse HEAD, z3 --version, cc --version, OS
+    validations:
+      required: true
+  - type: input
+    id: credit
+    attributes:
+      label: Credit
+      description: How you would like to be named in the hall of fame (or "none").

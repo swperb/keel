@@ -208,7 +208,8 @@ Working end-to-end compiler, no crates. `./tests/run.sh` runs the examples
 and a suite of programs that must be rejected. Known limits: stack depth is
 not yet bounded by the verifier; mutual recursion is rejected; recursive
 types (lists, trees) are not supported yet; the trusted base is Z3, the
-verifier and the C compiler (Lean's is a small proof kernel).
+verifier and the C compiler (Lean's is a small proof kernel). If you can get
+a bad program past `keel check`, see [BREAK_IT.md](BREAK_IT.md).
 
 Next, roughly in order:
 1. Sized integers (`u8`..`u64`, `i32`), arrays of any element type, recursive types.

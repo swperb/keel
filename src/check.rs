@@ -43,6 +43,12 @@ struct Checker<'a> {
     scopes: Vec<HashMap<String, Local>>,
     diags: Vec<Diag>,
     calls: HashSet<String>,
+    /// The whole expression of the statement being checked: the only place
+    /// a call that takes `&mut` may appear. C leaves the evaluation order of
+    /// operands and arguments unspecified, so a mutating call nested inside
+    /// a larger expression could run before or after its neighbours read
+    /// the same array.
+    top: *const Expr,
 }
 
 const BUILTINS: &[&str] = &["len", "array", "print"];
@@ -258,7 +264,13 @@ impl<'a> Checker<'a> {
                     None => Ty::I64,
                 }
             }
-            ExprK::Call(name, args) => self.call(name, args, e.span, ctx),
+            ExprK::Call(name, args) => {
+                if !std::ptr::eq(e, self.top) && args.iter().any(|a| matches!(a.k, ExprK::Borrow { mutable: true, .. })) {
+                    self.err(Diag::new("E-BORROW", e.span, format!("a call that takes &mut ('{}') must be a whole statement, initializer, assigned value, return value or condition", name))
+                        .hint("bind its result first: let r: i64 = f(&mut xs); then use r"));
+                }
+                self.call(name, args, e.span, ctx)
+            }
         }
     }
 
@@ -419,6 +431,11 @@ impl<'a> Checker<'a> {
 
     fn stmt(&mut self, s: &Stmt) {
         let cx = self.code();
+        self.top = match &s.k {
+            StmtK::Let { init: e, .. } | StmtK::Assign { val: e, .. } | StmtK::Return(Some(e)) | StmtK::Expr(e) => e,
+            StmtK::If { cond: e, .. } | StmtK::While { cond: e, .. } => e,
+            _ => std::ptr::null(),
+        };
         match &s.k {
             StmtK::Let { name, ty, init, mutable } => {
                 if matches!(ty, Ty::Ref | Ty::RefMut) {
@@ -568,6 +585,7 @@ impl<'a> Checker<'a> {
                 }
                 let mut items: Vec<(String, bool, bool, usize)> = vec![];
                 for (bi, b) in branches.iter().enumerate() {
+                    self.top = &b.call;
                     let ExprK::Call(fname, _) = &b.call.k else {
                         self.err(Diag::new("E-PARSE", b.span, "each 'par' branch must be a single function call"));
                         continue;
@@ -582,6 +600,12 @@ impl<'a> Checker<'a> {
                     self.want(t, b.ty, b.call.span, &format!("par branch '{}'", b.name.as_deref().unwrap_or(fname)));
                     if let ExprK::Call(_, args) = &b.call.k {
                         items.extend(Self::borrows_of(args).into_iter().map(|(n, m, sl)| (n, m, sl, bi)));
+                        // Every branch's arguments are evaluated before any
+                        // branch runs, so an array read anywhere in them must
+                        // not be one another branch writes.
+                        let mut rd = vec![];
+                        args.iter().for_each(|a| index_reads(a, &mut rd));
+                        items.extend(rd.into_iter().map(|n| (n, false, false, bi)));
                     }
                 }
                 self.conflicts(&items, s.span, "in another par branch");
@@ -605,6 +629,28 @@ impl Program {
     }
 }
 
+/// Arrays read by indexing anywhere inside `e`.
+fn index_reads(e: &Expr, out: &mut Vec<String>) {
+    match &e.k {
+        ExprK::Index(n, i) => {
+            out.push(n.clone());
+            index_reads(i, out);
+        }
+        ExprK::Borrow { range: Some((lo, hi)), .. } => {
+            index_reads(lo, out);
+            index_reads(hi, out);
+        }
+        ExprK::Call(_, args) => args.iter().for_each(|a| index_reads(a, out)),
+        ExprK::Unary(_, a) | ExprK::Field(a, _) | ExprK::Is(a, _, _) | ExprK::As(a, _, _) => index_reads(a, out),
+        ExprK::Binary(_, a, b) => {
+            index_reads(a, out);
+            index_reads(b, out);
+        }
+        ExprK::Lit { fields, .. } => fields.iter().for_each(|(_, f)| index_reads(f, out)),
+        _ => {}
+    }
+}
+
 fn always_returns(b: &Block) -> bool {
     match b.last().map(|s| &s.k) {
         Some(StmtK::Return(_)) => true,
@@ -616,6 +662,9 @@ fn always_returns(b: &Block) -> bool {
 
 fn check_types(prog: &Program, diags: &mut Vec<Diag>) {
     for d in &prog.types {
+        if ["Int", "Bool", "Real", "Array", "String"].contains(&d.name.as_str()) {
+            diags.push(Diag::new("E-NAME", d.span, format!("'{}' is reserved; pick another type name", d.name)));
+        }
         let fields: Vec<&Field> = match &d.kind {
             TypeKind::Struct(f) => f.iter().collect(),
             TypeKind::Enum(vs) => {
@@ -671,8 +720,11 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
             diags.push(Diag::new("E-NAME", f.span, format!("function '{}' is already defined", f.name)));
         }
         let ghost = f.kind != FnKind::Code;
-        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new() };
+        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null() };
         for p in &f.params {
+            if p.ty == Ty::Arr {
+                c.err(Diag::new("E-TYPE", p.span, format!("parameter '{}' cannot own an array; take &[i64] or &mut [i64]", p.name)));
+            }
             if ghost && matches!(p.ty, Ty::Arr | Ty::RefMut) {
                 c.err(Diag::new("E-SPEC", p.span, "spec fns and lemmas take arrays only as &[i64]"));
             }
@@ -688,13 +740,16 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
             let t = c.expr(r, Ctx::Spec, false);
             c.want(t, Ty::Bool, r.span, "requires clause");
         }
-        for r in &f.ensures {
-            let t = c.expr(r, Ctx::Ensures, false);
-            c.want(t, Ty::Bool, r.span, "ensures clause");
-        }
         if let Some(d) = &f.decreases {
             let t = c.expr(d, Ctx::Spec, false);
             c.want(t, Ty::I64, d.span, "decreases measure");
+        }
+        if c.calls.contains(&f.name) {
+            c.err(Diag::new("E-RECURSION", f.span, format!("'{}' calls itself in its own requires or decreases", f.name)).hint("state the precondition without the function being defined"));
+        }
+        for r in &f.ensures {
+            let t = c.expr(r, Ctx::Ensures, false);
+            c.want(t, Ty::Bool, r.span, "ensures clause");
         }
         if f.kind == FnKind::Spec {
             let StmtK::Return(Some(e)) = &f.body[0].k else { unreachable!() };

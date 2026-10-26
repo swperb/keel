@@ -1,0 +1,10 @@
+// expect: E-BORROW
+// The verifier stored into the array as it was before the value was
+// evaluated, dropping set7's write: it proved a[1] == 0, the program printed 7.
+fn set7(xs: &mut [i64]) -> i64 requires len(xs) == 2 ensures xs[1] == 7 && result == 0 { xs[1] = 7; return 0; }
+io fn main() {
+  let a: [i64] = array(2, 0);
+  a[0] = set7(&mut a);
+  assert a[1] == 0;
+  print(a[1]);
+}

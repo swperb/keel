@@ -1,0 +1,6 @@
+// expect: E-NAME
+// A type named Int collided with the solver's Int sort; the solver dropped
+// the facts that used it without saying so.
+struct Int { x: i64 }
+fn f(p: Int) -> i64 requires p.x == 3 ensures result == 1 { return 1; }
+io fn main() { print(1); }

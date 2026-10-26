@@ -34,6 +34,18 @@ code named on its first line, `// expect: CODE`).
 Requirements: Rust (stable), `z3` 4.8 or newer on PATH (or `KEEL_Z3`), and
 a C11 compiler (`CC`, default `cc`).
 
+## Soundness reports
+
+If `keel check` accepts a program that overflows, goes out of bounds,
+divides by zero, races, hangs, or breaks its own `ensures` at run time,
+please file a
+[soundness report](https://github.com/swperb/keel/issues/new?template=soundness.yml).
+[BREAK_IT.md](BREAK_IT.md) says what counts and where to look.
+
+Every accepted soundness fix ships with a test in `tests/reject/` built from
+the reported program, which fails before the fix and stays in the suite.
+Reporters are credited in the hall of fame in `BREAK_IT.md`.
+
 ## Pull requests
 
 - `main` is protected: changes land through pull requests that pass CI.

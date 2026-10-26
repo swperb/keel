@@ -1,0 +1,10 @@
+// expect: E-TYPE
+// An owned [i64] parameter accepted a shared borrow and let the callee write
+// through it, while the caller's proof assumed the array was unchanged.
+fn evil(xs: [i64]) -> i64 requires len(xs) == 1 { xs[0] = 5; return 0; }
+io fn main() {
+  let a: [i64] = array(1, 0);
+  let u: i64 = evil(&a);
+  assert a[0] == 0;
+  print(a[0]);
+}

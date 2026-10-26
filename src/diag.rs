@@ -96,7 +96,9 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E-TYPE" => "Type mismatch. Keel has no implicit conversions and no overloading.",
         "E-BORROW" => "Arrays are passed to functions only as `&xs` / `&mut xs` or slices `&xs[lo..hi]` / `&mut xs[lo..hi]`. \
                        An exclusive borrow may not coexist with any other use of the same array in the same call or `par` block, \
-                       unless both are slices, in which case the verifier must prove them disjoint (V-DISJOINT).",
+                       unless both are slices, in which case the verifier must prove them disjoint (V-DISJOINT). \
+                       A call that takes `&mut` must be a whole statement, initializer, assigned value, return value or condition, \
+                       never part of a larger expression, because C does not fix the order operands and arguments are evaluated in.",
         "E-ARRAY" => "Array values (from `array(..)` or a call returning `[i64]`) may only appear as a `let` initializer or a `return` value.",
         "E-EFFECT" => "Only `io fn` functions may call `print` or other `io fn` functions. `par` branches must be pure.",
         "E-SPEC" => "Specifications (requires/ensures/invariant/decreases/assert) are pure logic: no calls except `len`. \
@@ -123,7 +125,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "V-DEAD" => "This branch, match arm or loop body can never execute given the conditions and invariants that guard it. Dead code hides untested logic; delete it or fix the guard.",
         "V-SLICE" => "The verifier could not prove a slice's bounds satisfy 0 <= lo <= hi <= len(array).",
         "V-DISJOINT" => "Two borrows of one array, at least one exclusive, may touch overlapping indices: in one call, or across par branches (a data race). Prove the slice ranges disjoint, e.g. [lo..mid] and [mid..hi].",
-        "V-UNKNOWN" => "The solver timed out. Strengthen invariants or split the function.",
+        "V-UNKNOWN" => "The solver timed out or rejected the proof script. Strengthen invariants or split the function; a rejected script is a keel bug.",
         _ => return None,
     })
 }
