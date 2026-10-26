@@ -1,0 +1,46 @@
+name: automerge
+# Merge a pull request once its `ci` run passes, if auto-merge is turned on
+# for it. GitHub's own auto-merge does not fire on this repository when the
+# required check completes (see #11), so this does the same job.
+#
+# Only PRs with auto-merge enabled are merged, so it is opt-in per PR, and
+# only when CI passed on the PR's current head commit. It never checks out
+# or runs the PR's code.
+#
+# Merges made with the default GITHUB_TOKEN do not trigger other workflows
+# (Pages deploy, CI on main). To have them trigger, add a personal access
+# token with repo scope as the secret AUTOMERGE_TOKEN; it is used when set.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Merge if auto-merge is enabled
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          for pr in $(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[] | select(.state == "open") | .number'); do
+            info=$(gh pr view "$pr" --repo "$REPO" --json headRefOid,autoMergeRequest \
+              --jq '"\(.headRefOid) \(.autoMergeRequest != null)"')
+            head=${info% *}
+            auto=${info#* }
+            if [ "$head" != "$SHA" ]; then
+              echo "#$pr: CI passed on $SHA but the head is now $head; skipping"
+            elif [ "$auto" != "true" ]; then
+              echo "#$pr: auto-merge is not enabled; skipping"
+            else
+              echo "#$pr: CI passed on the head commit and auto-merge is enabled; merging"
+              gh pr merge "$pr" --repo "$REPO" --merge --match-head-commit "$SHA"
+            fi
+          done
