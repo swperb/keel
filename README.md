@@ -29,6 +29,17 @@ property is proven up front, the generated code has no runtime checks at all.
 
 ## Install
 
+Prebuilt binaries for macOS (Apple Silicon, Intel) and Linux (x86_64, arm64)
+are on the [releases page](https://github.com/swperb/keel/releases/latest).
+For example, on an Apple Silicon Mac:
+
+```
+curl -sSL https://github.com/swperb/keel/releases/download/v0.1.0/keel-v0.1.0-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv keel-v0.1.0-aarch64-apple-darwin/keel /usr/local/bin/
+```
+
+Or build from source with Cargo:
+
 ```
 cargo install --git https://github.com/swperb/keel
 ```
