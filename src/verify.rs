@@ -902,9 +902,98 @@ const PRELUDE: &str = "(set-option :produce-models true)
 (define-fun cmod ((a Int) (b Int)) Int (- a (* b (cdiv a b))))
 ";
 
+fn calls_expr(e: &Expr, out: &mut Vec<String>) {
+    match &e.k {
+        ExprK::Call(name, args) => {
+            out.push(name.clone());
+            args.iter().for_each(|a| calls_expr(a, out));
+        }
+        ExprK::Index(_, a) | ExprK::Unary(_, a) | ExprK::Old(a) | ExprK::Field(a, _) | ExprK::Is(a, _, _) | ExprK::As(a, _, _) => calls_expr(a, out),
+        ExprK::Binary(_, a, b) => {
+            calls_expr(a, out);
+            calls_expr(b, out);
+        }
+        ExprK::IfE(c, a, b) => {
+            calls_expr(c, out);
+            calls_expr(a, out);
+            calls_expr(b, out);
+        }
+        ExprK::Quant { range, body, .. } => {
+            if let Some((lo, hi)) = range {
+                calls_expr(lo, out);
+                calls_expr(hi, out);
+            }
+            calls_expr(body, out);
+        }
+        ExprK::Borrow { range: Some((lo, hi)), .. } => {
+            calls_expr(lo, out);
+            calls_expr(hi, out);
+        }
+        ExprK::Lit { fields, .. } => fields.iter().for_each(|(_, v)| calls_expr(v, out)),
+        _ => {}
+    }
+}
+
+fn calls_block(b: &Block, out: &mut Vec<String>) {
+    for s in b {
+        match &s.k {
+            StmtK::Let { init: e, .. } | StmtK::Assign { val: e, .. } | StmtK::Assert(e) | StmtK::Expr(e) | StmtK::Return(Some(e)) => calls_expr(e, out),
+            StmtK::Store { idx, val, .. } => {
+                calls_expr(idx, out);
+                calls_expr(val, out);
+            }
+            StmtK::If { cond, then, els } => {
+                calls_expr(cond, out);
+                calls_block(then, out);
+                if let Some(e) = els {
+                    calls_block(e, out);
+                }
+            }
+            StmtK::While { cond, invs, dec, body } => {
+                calls_expr(cond, out);
+                invs.iter().for_each(|i| calls_expr(i, out));
+                calls_expr(dec, out);
+                calls_block(body, out);
+            }
+            StmtK::Par(bs) => bs.iter().for_each(|b| calls_expr(&b.call, out)),
+            StmtK::Match { scrut, arms, .. } => {
+                calls_expr(scrut, out);
+                arms.iter().for_each(|a| calls_block(&a.body, out));
+            }
+            StmtK::Return(None) => {}
+        }
+    }
+}
+
+/// The spec fns whose definitions a proof about `f` can depend on: those
+/// named in `f` itself, in the contracts of anything it calls, and in the
+/// bodies of those spec fns, transitively. Only these axioms go into `f`'s
+/// solver query, so a definition elsewhere in the file cannot change
+/// whether `f` proves. Leaving axioms out only weakens assumptions.
+fn spec_deps(map: &HashMap<String, &Func>, f: &Func) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut specs = std::collections::HashSet::new();
+    let mut work = vec![];
+    f.requires.iter().chain(&f.ensures).chain(&f.decreases).for_each(|e| calls_expr(e, &mut work));
+    calls_block(&f.body, &mut work);
+    while let Some(name) = work.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(g) = map.get(&name) else { continue };
+        g.requires.iter().chain(&g.ensures).chain(&g.decreases).for_each(|e| calls_expr(e, &mut work));
+        if g.kind == FnKind::Spec {
+            specs.insert(name);
+            calls_block(&g.body, &mut work);
+        }
+    }
+    specs
+}
+
 /// SMT declarations shared by every function: datatypes for structs and
-/// enums, and spec fns with their definitional axioms.
-fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) -> String {
+/// enums, and spec fns with their definitional axioms. With `only`, axioms
+/// are limited to those spec fns (every spec fn is still declared).
+fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool, only: Option<&std::collections::HashSet<String>>) -> String {
     let mut s = String::from(PRELUDE);
     if uses_count() {
         s += COUNT_DECLS;
@@ -953,7 +1042,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
     }
     // Spec fns are checked without any definitional axioms, so a bad
     // definition can never vouch for its own well-formedness.
-    let specs: Vec<&Func> = if axioms { specs } else { vec![] };
+    let specs: Vec<&Func> = if axioms { specs.into_iter().filter(|f| only.map_or(true, |o| o.contains(&f.name))).collect() } else { vec![] };
     for f in &specs {
         let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new() };
         let mut st = St::default();
@@ -1286,9 +1375,8 @@ pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String>
     let (specs, rest): (Vec<&Func>, Vec<&Func>) = funcs.iter().partition(|f| f.kind == FnKind::Spec);
     let mut total = VResult { diags: vec![], proved: 0, inconclusive: 0 };
     for (phase, axioms) in [(specs, false), (rest, true)] {
-        let prelude = shared_prelude(prog, &map, axioms);
-        let bare = shared_prelude(prog, &map, false);
-        let r = run_phase(prog, &map, &phase, &prelude, &bare, dump_dir)?;
+        let bare = shared_prelude(prog, &map, false, None);
+        let r = run_phase(prog, &map, &phase, axioms, &bare, dump_dir)?;
         total.proved += r.proved;
         total.inconclusive += r.inconclusive;
         total.diags.extend(r.diags);
@@ -1379,9 +1467,16 @@ fn loop_hint(looping: &Option<(Span, String, String)>) -> Option<String> {
     })
 }
 
-fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prelude: &str, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
+fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], axioms: bool, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
     let jobs: Vec<(Vec<String>, Vec<Obl>)> = funcs.iter().map(|f| gen_func(prog, map, f)).collect();
-    let scripts: Vec<String> = jobs.iter().map(|(d, o)| build_script(prelude, d, o, &(0..o.len()).collect::<Vec<_>>(), false)).collect();
+    let scripts: Vec<String> = jobs
+        .iter()
+        .zip(funcs)
+        .map(|((d, o), f)| {
+            let prelude = if axioms { shared_prelude(prog, map, true, Some(&spec_deps(map, f))) } else { bare.to_string() };
+            build_script(&prelude, d, o, &(0..o.len()).collect::<Vec<_>>(), false)
+        })
+        .collect();
     if let Some(dir) = dump_dir {
         for (f, script) in funcs.iter().zip(&scripts) {
             let _ = std::fs::write(format!("{}/{}.smt2", dir, f.name), script);
