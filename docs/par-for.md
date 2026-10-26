@@ -224,3 +224,24 @@ the run's launches.
   and the two tie on triad; on the M5 Pro above they tied on lcg. The
   difference is the C compiler and OpenMP runtime (gcc/libgomp here, clang
   and LLVM's libomp there), not the generated loop.
+
+## Measured: f32
+
+`bench/parfor/logistic.kl` ([f32.md](f32.md)): 256 steps of
+`x = (3.9 * x) * (1.0 - x)` in f32 for each of 10M slots, then a serial
+checksum of the bits. Every build on both machines, Keel on the CPU, Keel
+on the GPU and Rust, prints the same checksum (3047852245): the results
+are bit-identical. Same method as above (medians of 7 whole-process runs).
+
+| machine | Keel GPU | Keel CPU (OpenMP) | Keel serial | Rust rayon | Rust serial |
+|---|---|---|---|---|---|
+| M5 Pro, 15 cores | n/a | 0.216 s | 2.461 s | 0.210 s | 2.457 s |
+| Ryzen 5 5600X + RTX 5080 | 0.272 s | 0.447 s | 0.813 s | 0.322 s | n/a |
+
+On the RTX 5080 the kernel itself takes 0.8 ms (copy in 11.2 ms, copy out
+51.7 ms); the rest of the 0.272 s is the fixed cost of starting CUDA
+(about 0.28 s per process on that machine, see above), so for this size
+the GPU wins only once that cost is shared by more work in one process.
+The other kernels, measured in the same run on the Ryzen machine: lcg GPU
+0.323 s, OpenMP 0.741 s, rayon 0.576 s; triad GPU 4.766 s, OpenMP 1.205 s,
+rayon 1.127 s (consistent with the step-2 table).

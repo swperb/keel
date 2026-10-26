@@ -85,7 +85,7 @@ fn build(file: &str, opts: &Opts, out: &str) {
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
     let compile = |extra: &[String]| {
         Command::new(&cc)
-            .args(["-O3", "-std=c11", "-w", "-o", out, &cpath, "-lpthread"])
+            .args(["-O3", "-std=c11", "-ffp-contract=off", "-w", "-o", out, &cpath, "-lpthread"])
             .args(if c.contains("klrt_ptx") { &["-ldl"][..] } else { &[] })
             .args(extra)
             .stderr(if extra.is_empty() { std::process::Stdio::inherit() } else { std::process::Stdio::null() })

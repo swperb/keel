@@ -1,0 +1,14 @@
+// expect: E-SPEC
+// A spec may not call a fn that computes with floats, even one returning an integer.
+fn rounded(n: i64) -> i64
+  requires 0 <= n && n <= 1000
+{
+  return to_i64(to_f32(n) * 0.5);
+}
+
+fn g(n: i64) -> i64
+  requires 0 <= n && n <= 1000
+  ensures result == rounded(n)
+{
+  return to_i64(to_f32(n) * 0.5);
+}

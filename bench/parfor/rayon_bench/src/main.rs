@@ -1,6 +1,7 @@
-// The rayon side of bench/parfor: the same kernels as lcg.kl and triad.kl,
-// same i64 arithmetic, same array sizes, same serial checksum. Run as
-// `rayon_bench lcg|triad [serial]`; `serial` uses plain iterators instead.
+// The rayon side of bench/parfor: the same kernels as lcg.kl, triad.kl and
+// logistic.kl, same arithmetic, same array sizes, same serial checksum. Run
+// as `rayon_bench lcg|triad|logistic [serial]`; `serial` uses plain
+// iterators instead.
 use rayon::prelude::*;
 
 fn mix(x0: i64, rounds: i64) -> i64 {
@@ -39,8 +40,23 @@ fn main() {
             }
             println!("{}", zs.iter().sum::<i64>());
         }
+        Some("logistic") => {
+            let n = 10_000_000usize;
+            let mut out = vec![0f32; n];
+            let k = |(i, o): (usize, &mut f32)| {
+                let mut x = (i as i64 + 1) as f32 / (n as i64 + 2) as f32;
+                for _ in 0..256 {
+                    x = (3.9f32 * x) * (1.0 - x);
+                }
+                *o = x;
+            };
+            if serial { out.iter_mut().enumerate().for_each(k) } else { out.par_iter_mut().enumerate().for_each(k) }
+            // The same bit checksum as logistic.kl: h = (h * 31 + bits) mod 2^32.
+            let h = out.iter().fold(0u32, |h, x| h.wrapping_mul(31).wrapping_add(x.to_bits()));
+            println!("{}", h);
+        }
         _ => {
-            eprintln!("usage: rayon_bench lcg|triad [serial]");
+            eprintln!("usage: rayon_bench lcg|triad|logistic [serial]");
             std::process::exit(2)
         }
     }

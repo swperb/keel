@@ -1,0 +1,9 @@
+// f32 code is still proven in bounds and race-free; float values
+// themselves are never reasoned about.
+fn saxpy(a: f32, xs: &[f32], ys: &mut [f32])
+  requires len(ys) == len(xs)
+{
+  par for i in 0..len(ys) {
+    ys[i] = (a * xs[i]) + ys[i];
+  }
+}

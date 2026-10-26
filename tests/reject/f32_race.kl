@@ -1,0 +1,8 @@
+// expect: V-RACE
+fn f(xs: &mut [f32])
+  requires len(xs) > 1
+{
+  par for i in 1..len(xs) {
+    xs[i - 1] = xs[i] * 2.0;
+  }
+}

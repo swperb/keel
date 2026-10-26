@@ -57,7 +57,7 @@ struct Checker<'a> {
     parfor: Option<usize>,
 }
 
-const BUILTINS: &[&str] = &["len", "array", "print", "count", "wrap_i8", "wrap_i16", "wrap_i32", "wrap_i64", "wrap_u8", "wrap_u16", "wrap_u32"];
+const BUILTINS: &[&str] = &["len", "array", "print", "count", "to_f32", "to_i64", "f32_bits", "wrap_i8", "wrap_i16", "wrap_i32", "wrap_i64", "wrap_u8", "wrap_u16", "wrap_u32"];
 
 /// The integer type a `wrap_<type>` builtin reduces into.
 pub fn wrap_kind(name: &str) -> Option<IntK> {
@@ -128,6 +128,10 @@ impl<'a> Checker<'a> {
     /// and `return` values, the two places array values may appear.
     fn expr(&mut self, e: &Expr, ctx: Ctx, arr_ok: bool) -> Ty {
         let t = self.expr_inner(e, ctx, arr_ok);
+        if t == Ty::F32 && ctx != Ctx::Code {
+            self.err(Diag::new("E-SPEC", e.span, "specifications cannot mention f32 values: Keel proves nothing about floats, so no contract may depend on one")
+                .hint("state facts about integers instead; see docs/f32.md"));
+        }
         if t.is_owned_array() && !arr_ok && !matches!(e.k, ExprK::Var(_)) {
             self.err(Diag::new("E-ARRAY", e.span, "array values may only be a 'let' initializer or a 'return' value"));
         }
@@ -137,6 +141,7 @@ impl<'a> Checker<'a> {
     fn expr_inner(&mut self, e: &Expr, ctx: Ctx, arr_ok: bool) -> Ty {
         match &e.k {
             ExprK::Int(_) => Ty::I64,
+            ExprK::Float(_) => Ty::F32,
             ExprK::Bool(_) => Ty::Bool,
             ExprK::Result => {
                 if ctx != Ctx::Ensures {
@@ -164,7 +169,7 @@ impl<'a> Checker<'a> {
                 let elem = self.array_var(n, e.span).and_then(|l| l.ty.elem()).unwrap_or(IntK::I64);
                 let it = self.expr(idx, ctx, false);
                 self.want(it, Ty::I64, idx.span, "array index");
-                Ty::Int(elem)
+                Ty::of_elem(elem)
             }
             ExprK::Borrow { .. } => {
                 self.err(Diag::new("E-BORROW", e.span, "borrows (&xs, &mut xs) may only appear as call arguments"));
@@ -173,6 +178,7 @@ impl<'a> Checker<'a> {
             ExprK::Unary(op, a) => {
                 let t = self.expr(a, ctx, false);
                 match op {
+                    UOp::Neg if t == Ty::F32 => Ty::F32,
                     UOp::Neg | UOp::BitNot => {
                         self.want(t, Ty::I64, a.span, if *op == UOp::Neg { "operand of '-'" } else { "operand of '~'" });
                         Ty::I64
@@ -186,6 +192,20 @@ impl<'a> Checker<'a> {
             ExprK::Binary(op, a, b) => {
                 let ta = self.expr(a, ctx, false);
                 let tb = self.expr(b, ctx, false);
+                if ta == Ty::F32 || tb == Ty::F32 {
+                    // No implicit conversions: f32 meets only f32.
+                    if ta != tb {
+                        self.err(Diag::new("E-TYPE", e.span, format!("'{}' mixes {} and {}; convert explicitly with to_f32(..) or to_i64(..)", op.sym(), ta.name(), tb.name())));
+                    }
+                    return match op {
+                        BOp::Add | BOp::Sub | BOp::Mul | BOp::Div => Ty::F32,
+                        BOp::Eq | BOp::Ne | BOp::Lt | BOp::Le | BOp::Gt | BOp::Ge => Ty::Bool,
+                        _ => {
+                            self.err(Diag::new("E-TYPE", e.span, format!("'{}' is not defined on f32 (f32 has + - * / and comparisons)", op.sym())));
+                            Ty::F32
+                        }
+                    };
+                }
                 match op {
                     BOp::Add | BOp::Sub | BOp::Mul | BOp::Div | BOp::Mod | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::Shl | BOp::Shr => {
                         self.want(ta, Ty::I64, a.span, "arithmetic operand");
@@ -318,7 +338,9 @@ impl<'a> Checker<'a> {
             }
             match &args[0].k {
                 ExprK::Borrow { name, mutable: false, range: None } => {
-                    self.array_var(name, args[0].span);
+                    if self.array_var(name, args[0].span).is_some_and(|l| l.ty.has_f32()) {
+                        self.err(Diag::new("E-SPEC", args[0].span, "specifications cannot mention f32 values: count over an f32 array compares floats"));
+                    }
                 }
                 _ => self.err(Diag::new("E-TYPE", args[0].span, "count's first argument is a shared borrow of an array, e.g. &xs")),
             }
@@ -327,6 +349,23 @@ impl<'a> Checker<'a> {
                 self.want(t, Ty::I64, a.span, "count argument");
             }
             return Ty::I64;
+        }
+        if let Some((want, ret)) = match name {
+            "to_f32" => Some((Ty::I64, Ty::F32)),
+            "to_i64" | "f32_bits" => Some((Ty::F32, Ty::I64)),
+            _ => None,
+        } {
+            // to_f32: nearest f32. to_i64: toward zero, saturating at the
+            // i64 bounds, NaN to 0. f32_bits: the IEEE bits, 0..2^32.
+            if args.len() != 1 {
+                self.err(Diag::new("E-TYPE", span, format!("{} takes exactly one {}", name, want.name())));
+                return ret;
+            }
+            let t = self.expr(&args[0], ctx, false);
+            if (want == Ty::F32) != (t == Ty::F32) {
+                self.err(Diag::new("E-TYPE", args[0].span, format!("{} takes {}, found {}", name, if want == Ty::F32 { "f32" } else { "an integer" }, t.name())));
+            }
+            return ret;
         }
         if let Some(k) = wrap_kind(name) {
             // wrap_u32(e): e reduced modulo 2^32 into u32's range. Its + - *
@@ -361,7 +400,11 @@ impl<'a> Checker<'a> {
             let mut d = Diag::new("E-SPEC", span, format!("specifications may only call spec fns, len, count, and fns that are pure and loop-free, not '{}'", name));
             if callee_kind == Some(FnKind::Code) {
                 if let Some(why) = crate::lift::why_not(self.funcs, name) {
-                    d = d.hint(format!("{}; write a 'spec fn' for it, and prove they agree with ensures result == spec(..)", why));
+                    d = if why.contains("f32") {
+                        d.hint(format!("{}; specifications cannot depend on floats (docs/f32.md)", why))
+                    } else {
+                        d.hint(format!("{}; write a 'spec fn' for it, and prove they agree with ensures result == spec(..)", why))
+                    };
                 }
             }
             self.err(d);
@@ -438,6 +481,9 @@ impl<'a> Checker<'a> {
                     continue;
                 };
                 let Some(l) = self.array_var(an, a.span) else { continue };
+                if ctx != Ctx::Code && l.ty.has_f32() {
+                    self.err(Diag::new("E-SPEC", a.span, format!("specifications cannot mention f32 values: '{}' is an f32 array", an)));
+                }
                 if *mutable != matches!(pt, Ty::RefMutOf(_)) {
                     self.err(Diag::new("E-BORROW", a.span, format!("parameter expects {}", pt.name())));
                 }
@@ -588,7 +634,8 @@ impl<'a> Checker<'a> {
                 let ti = self.expr(idx, cx, false);
                 self.want(ti, Ty::I64, idx.span, "array index");
                 let tv = self.expr(val, cx, false);
-                self.want(tv, Ty::I64, val.span, "stored value");
+                let elem = self.lookup(name).and_then(|l| l.ty.elem()).unwrap_or(IntK::I64);
+                self.want(tv, Ty::of_elem(elem), val.span, "stored value");
             }
             StmtK::If { cond, then, els } => {
                 let t = self.expr(cond, cx, false);
@@ -907,8 +954,8 @@ fn check_types(prog: &Program, diags: &mut Vec<Diag>) {
         };
         let mut seen = HashSet::new();
         for f in &fields {
-            if f.ty.is_array() || f.ty == Ty::Unit {
-                diags.push(Diag::new("E-TYPE", f.span, "fields may be i64, bool, or another struct/enum (no arrays yet)"));
+            if f.ty.is_array() || f.ty == Ty::Unit || f.ty == Ty::F32 {
+                diags.push(Diag::new("E-TYPE", f.span, "fields may be integers, bool, or another struct/enum (no arrays or f32 yet)"));
             }
             if matches!(d.kind, TypeKind::Struct(_)) && !seen.insert(&f.name) {
                 diags.push(Diag::new("E-NAME", f.span, format!("duplicate field '{}'", f.name)));

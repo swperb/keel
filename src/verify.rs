@@ -340,10 +340,47 @@ impl<'a> Gen<'a> {
         r
     }
 
+    /// Whether `e` computes an f32 (the checker keeps floats out of specs).
+    fn f32_expr(&self, st: &St, e: &Expr) -> bool {
+        is_f32(e, &|n| st.vars.get(n).map(|v| v.ty), &|n| self.funcs.get(n).map(|f| f.ret))
+    }
+
     fn ex(&mut self, st: &mut St, e: &Expr, spec: bool) -> String {
         let spec = spec || self.ghost;
+        // Floats are opaque: each f32 operation yields a fresh, unconstrained
+        // value, so no proof can depend on one. Operands are still
+        // evaluated, which proves the integer code inside them (indices).
+        let opaque = match &e.k {
+            ExprK::Float(_) => Some(Ty::F32),
+            ExprK::Unary(UOp::Neg, a) if self.f32_expr(st, a) => Some(Ty::F32),
+            ExprK::Binary(op, a, _) if self.f32_expr(st, a) => Some(if matches!(op, BOp::Add | BOp::Sub | BOp::Mul | BOp::Div) { Ty::F32 } else { Ty::Bool }),
+            ExprK::Call(n, _) if n == "to_f32" => Some(Ty::F32),
+            ExprK::Call(n, _) if n == "to_i64" || n == "f32_bits" => Some(Ty::I64),
+            _ => None,
+        };
+        if let Some(t) = opaque {
+            match &e.k {
+                ExprK::Unary(_, a) => {
+                    self.ex(st, a, spec);
+                }
+                ExprK::Binary(_, a, b) => {
+                    self.ex(st, a, spec);
+                    self.ex(st, b, spec);
+                }
+                ExprK::Call(_, args) => {
+                    self.ex(st, &args[0], spec);
+                }
+                _ => {}
+            }
+            let x = self.fresh("f32", t, st);
+            if matches!(&e.k, ExprK::Call(n, _) if n == "f32_bits") {
+                st.pc.push(format!("(and (<= 0 {}) (< {} 4294967296))", x, x));
+            }
+            return x;
+        }
         match &e.k {
             ExprK::Int(v) => lit(*v),
+            ExprK::Float(_) => unreachable!(),
             ExprK::Bool(b) => b.to_string(),
             ExprK::Var(n) => st.vars[n].smt.clone(),
             ExprK::Result => st.vars["result"].smt.clone(),
@@ -364,7 +401,7 @@ impl<'a> Gen<'a> {
                 }
                 self.record(st, n, &iv, None, false, spec, e.span);
                 let t = format!("(select {} {})", a.smt, iv);
-                if !spec {
+                if !spec && a.ty.elem() != Some(IntK::F32) {
                     st.pc.push(range_of(&t, a.ty.elem().unwrap()));
                 }
                 t
@@ -660,7 +697,7 @@ impl<'a> Gen<'a> {
                 let nv = self.ex(st, &args[0], spec);
                 let fill = self.ex(st, &args[1], spec);
                 let elem = std::mem::replace(&mut self.arr_elem, IntK::I64);
-                self.fit(st, &fill, Ty::Int(elem), args[1].span);
+                self.fit(st, &fill, Ty::of_elem(elem), args[1].span);
                 self.obl(st, "V-ALLOC", span, format!("(and (<= 0 {}) (<= {} {}))", nv, nv, MAX_LEN), "array length may be negative or larger than 2^40".into(), "bound the length with a requires clause");
                 let a = self.fresh("arr", Ty::Arr, st);
                 let len = self.fresh_len("arr", st);
@@ -937,7 +974,7 @@ impl<'a> Gen<'a> {
                 // Read the array only after the value: evaluating it may have
                 // changed the array (C stores into the array as it is then).
                 let a = st.vars[name].clone();
-                self.fit(st, &vv, Ty::Int(a.ty.elem().unwrap()), val.span);
+                self.fit(st, &vv, Ty::of_elem(a.ty.elem().unwrap()), val.span);
                 self.record(st, name, &iv, None, true, false, s.span);
                 let a2 = self.fresh(name, Ty::Arr, st);
                 st.pc.push(format!("(= {} (store {} {} {}))", a2, a.smt, iv, vv));

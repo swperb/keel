@@ -1,0 +1,6 @@
+// expect: E-SPEC
+fn half(x: f32) -> f32
+  ensures result == x / 2.0
+{
+  return x / 2.0;
+}

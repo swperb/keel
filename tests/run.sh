@@ -31,6 +31,9 @@ if [ -n "$a" ] && [ "$a" = "$b" ]; then echo "ok   parfor parallel == serial"; e
 expect_run kernels "2258497628 2538369920 2545925184 3402507152 1018509904 122996 116 512646704 3206573824 "
 a=$($K run examples/kernels.kl 2>/dev/null); b=$(KEEL_GPU=0 $K run examples/kernels.kl 2>/dev/null)
 if [ -n "$a" ] && [ "$a" = "$b" ]; then echo "ok   kernels default == KEEL_GPU=0"; else echo "FAIL kernels default != KEEL_GPU=0"; fail=1; fi
+# f32: parallel and serial results agree bit for bit (first and third
+# lines), and float-to-integer conversion is defined for every input.
+expect_run f32 "0 412565504 0 2624117011 -2 9223372036854775807 -9223372036854775808 0 9223372036854775807 16777216 1065353216 1 0 "
 # Verification is deterministic: the same file gives byte-identical output.
 a=$($K check examples/msort.kl 2>&1); b=$($K check examples/msort.kl 2>&1)
 if [ "$a" = "$b" ]; then echo "ok   deterministic msort"; else echo "FAIL deterministic msort"; fail=1; fi

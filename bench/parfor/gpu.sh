@@ -10,7 +10,7 @@ OUT=$(mktemp -d)
 (cd ../.. && cargo build --release -q)
 (cd rayon_bench && cargo build --release -q)
 R=rayon_bench/target/release/rayon_bench
-for k in lcg triad; do
+for k in lcg triad logistic; do
   $K build $k.kl -o "$OUT/$k" 2>/dev/null
   KEEL_NO_OPENMP=1 $K build $k.kl -o "$OUT/$k-serial" 2>/dev/null
 done
@@ -28,7 +28,7 @@ def t(cmd, env={}):
 print(f"cpu threads: {os.cpu_count()}")
 print("| kernel | Keel GPU | Keel CPU (OpenMP) | Keel serial | Rust rayon | GPU: copy in / kernel / copy out (sum over launches) |")
 print("|---|---|---|---|---|---|")
-for k in ["lcg", "triad"]:
+for k in ["lcg", "triad", "logistic"]:
     g, go = t([f"{out}/{k}"], {"KEEL_GPU": "1"})
     c, co = t([f"{out}/{k}"], {"KEEL_GPU": "0"})
     s, so = t([f"{out}/{k}-serial"], {"KEEL_GPU": "0"})

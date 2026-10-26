@@ -27,6 +27,9 @@ pub enum IntK {
     U8,
     U16,
     U32,
+    /// Not an integer: the element kind of `[f32]` arrays. Scalar f32
+    /// values have type `Ty::F32`; `Ty::of_elem` maps between the two.
+    F32,
 }
 
 impl IntK {
@@ -40,21 +43,23 @@ impl IntK {
             IntK::U8 => "u8",
             IntK::U16 => "u16",
             IntK::U32 => "u32",
+            IntK::F32 => "f32",
         }
     }
     pub fn bits(self) -> u32 {
         match self {
             IntK::I8 | IntK::U8 => 8,
             IntK::I16 | IntK::U16 => 16,
-            IntK::I32 | IntK::U32 => 32,
+            IntK::I32 | IntK::U32 | IntK::F32 => 32,
             IntK::I64 => 64,
         }
     }
     pub fn signed(self) -> bool {
         matches!(self, IntK::I8 | IntK::I16 | IntK::I32 | IntK::I64)
     }
-    /// Inclusive value range.
+    /// Inclusive value range (integers only).
     pub fn range(self) -> (i128, i128) {
+        assert!(self != IntK::F32, "f32 has no integer range");
         let b = self.bits();
         if self.signed() {
             (-(1i128 << (b - 1)), (1i128 << (b - 1)) - 1)
@@ -63,6 +68,9 @@ impl IntK {
         }
     }
     pub fn cname(self) -> String {
+        if self == IntK::F32 {
+            return "float".into();
+        }
         format!("{}int{}_t", if self.signed() { "" } else { "u" }, self.bits())
     }
 }
@@ -70,6 +78,8 @@ impl IntK {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
     Int(IntK),
+    /// IEEE single precision. The verifier never reasons about its value.
+    F32,
     Bool,
     Unit,
     /// Owned heap array `[T]`. Freed when its scope ends unless returned.
@@ -92,6 +102,18 @@ impl Ty {
 
     pub fn is_array(self) -> bool {
         matches!(self, Ty::ArrOf(_) | Ty::RefOf(_) | Ty::RefMutOf(_))
+    }
+    /// The type of one element of an array of `k`.
+    pub fn of_elem(k: IntK) -> Ty {
+        if k == IntK::F32 {
+            Ty::F32
+        } else {
+            Ty::Int(k)
+        }
+    }
+    /// An f32 value, or an array of them.
+    pub fn has_f32(self) -> bool {
+        self == Ty::F32 || self.elem() == Some(IntK::F32)
     }
     pub fn is_int(self) -> bool {
         matches!(self, Ty::Int(_))
@@ -116,6 +138,7 @@ impl Ty {
     pub fn name(self) -> String {
         match self {
             Ty::Int(k) => k.name().into(),
+            Ty::F32 => "f32".into(),
             Ty::Bool => "bool".into(),
             Ty::Unit => "unit".into(),
             Ty::ArrOf(k) => format!("[{}]", k.name()),
@@ -326,6 +349,8 @@ impl BOp {
 #[derive(Clone, Debug)]
 pub enum ExprK {
     Int(i128),
+    /// An f32 literal, already rounded to f32.
+    Float(f32),
     Bool(bool),
     Var(String),
     Result,
@@ -353,4 +378,19 @@ pub enum ExprK {
 pub struct Expr {
     pub k: ExprK,
     pub span: Span,
+}
+
+/// Whether `e` is an f32 expression, given the types of variables and
+/// function results. Operands of one operator have one type (checked), so
+/// the left operand decides.
+pub fn is_f32(e: &Expr, var: &dyn Fn(&str) -> Option<Ty>, ret: &dyn Fn(&str) -> Option<Ty>) -> bool {
+    match &e.k {
+        ExprK::Float(_) => true,
+        ExprK::Var(n) => var(n) == Some(Ty::F32),
+        ExprK::Index(n, _) => var(n).and_then(|t| t.elem()) == Some(IntK::F32),
+        ExprK::Call(n, _) => n == "to_f32" || ret(n) == Some(Ty::F32),
+        ExprK::Unary(UOp::Neg, a) => is_f32(a, var, ret),
+        ExprK::Binary(BOp::Add | BOp::Sub | BOp::Mul | BOp::Div, a, _) => is_f32(a, var, ret),
+        _ => false,
+    }
 }

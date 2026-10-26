@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 K=./target/release/keel
 fail=0
 d=$(mktemp -d)
-for f in examples/kernels.kl examples/parfor.kl tests/gpu/cpu_only.kl bench/parfor/lcg.kl bench/parfor/triad.kl; do
+for f in examples/kernels.kl examples/parfor.kl examples/f32.kl bench/parfor/logistic.kl tests/gpu/cpu_only.kl bench/parfor/lcg.kl bench/parfor/triad.kl; do
   $K build "$f" -o "$d/p" 2>"$d/build" || { echo "FAIL build $f"; cat "$d/build"; fail=1; continue; }
   gpu=$(KEEL_GPU=1 KEEL_GPU_TIMING=1 "$d/p" 2>"$d/err"); cpu=$(KEEL_GPU=0 "$d/p" 2>/dev/null)
   launches=$(grep -c "^keel: gpu .* ok:" "$d/err")

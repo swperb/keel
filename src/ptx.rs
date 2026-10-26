@@ -21,8 +21,8 @@ pub struct Kernel {
     pub name: String,
     pub entry: String,
     pub callees: BTreeSet<String>,
-    /// Outer scalars, passed as 64-bit values.
-    pub scalars: Vec<String>,
+    /// Outer scalars: f32 as itself, everything else as a 64-bit value.
+    pub scalars: Vec<(String, Ty)>,
     /// Outer arrays: (name, element type, written by the loop).
     pub arrays: Vec<(String, IntK, bool)>,
 }
@@ -38,6 +38,7 @@ struct Px<'a> {
     out: String,
     rd: usize,
     r: usize,
+    f: usize,
     p: usize,
     label: usize,
     vals: HashMap<String, String>,
@@ -60,17 +61,32 @@ fn mem_ty(k: IntK) -> &'static str {
         IntK::U8 => "u8",
         IntK::U16 => "u16",
         IntK::U32 => "u32",
+        IntK::F32 => "f32",
+    }
+}
+
+/// f32 values live in `%f` registers, everything else in 64-bit `%rd`.
+fn is_f(reg: &str) -> bool {
+    reg.starts_with("%f")
+}
+
+/// PTX parameter type for a scalar.
+fn pty(t: Ty) -> &'static str {
+    if t == Ty::F32 {
+        "f32"
+    } else {
+        "b64"
     }
 }
 
 /// A scalar type the GPU path can carry in a 64-bit register.
 fn scalar_ok(t: Ty) -> bool {
-    matches!(t, Ty::Int(_) | Ty::Bool)
+    matches!(t, Ty::Int(_) | Ty::Bool | Ty::F32)
 }
 
 impl<'a> Px<'a> {
     fn new(funcs: &'a HashMap<&'a str, &'a Func>) -> Px<'a> {
-        Px { funcs, out: String::new(), rd: 0, r: 0, p: 0, label: 0, vals: HashMap::new(), arrs: HashMap::new(), callees: BTreeSet::new() }
+        Px { funcs, out: String::new(), rd: 0, r: 0, f: 0, p: 0, label: 0, vals: HashMap::new(), arrs: HashMap::new(), callees: BTreeSet::new() }
     }
     fn i(&mut self, s: &str) {
         self.out += "\t";
@@ -85,6 +101,25 @@ impl<'a> Px<'a> {
         self.r += 1;
         format!("%r{}", self.r)
     }
+    fn freg(&mut self) -> String {
+        self.f += 1;
+        format!("%f{}", self.f)
+    }
+    /// A fresh register of `v`'s kind.
+    fn like(&mut self, v: &str) -> String {
+        if is_f(v) {
+            self.freg()
+        } else {
+            self.rd()
+        }
+    }
+    fn mov(v: &str) -> &'static str {
+        if is_f(v) {
+            "mov.f32"
+        } else {
+            "mov.b64"
+        }
+    }
     fn pred(&mut self) -> String {
         self.p += 1;
         format!("%p{}", self.p)
@@ -94,7 +129,7 @@ impl<'a> Px<'a> {
         format!("$L{}", self.label)
     }
     fn regs(&self) -> String {
-        format!("\t.reg .b64 %rd<{}>;\n\t.reg .b32 %r<{}>;\n\t.reg .pred %p<{}>;\n", self.rd + 1, self.r + 1, self.p + 1)
+        format!("\t.reg .b64 %rd<{}>;\n\t.reg .b32 %r<{}>;\n\t.reg .f32 %f<{}>;\n\t.reg .pred %p<{}>;\n", self.rd + 1, self.r + 1, self.f + 1, self.p + 1)
     }
 
     /// Address of xs[idx].
@@ -114,6 +149,12 @@ impl<'a> Px<'a> {
                 self.i(&format!("mov.b64 {}, {};", d, lit));
                 d
             }
+            ExprK::Float(v) => {
+                // Exact: PTX takes an f32 literal as its IEEE bits.
+                let d = self.freg();
+                self.i(&format!("mov.f32 {}, 0f{:08X};", d, v.to_bits()));
+                d
+            }
             ExprK::Bool(b) => {
                 let d = self.rd();
                 self.i(&format!("mov.b64 {}, {};", d, *b as i32));
@@ -123,6 +164,11 @@ impl<'a> Px<'a> {
             ExprK::Index(n, idx) => {
                 let iv = self.ex(idx)?;
                 let (a, k) = self.addr(n, &iv);
+                if k == IntK::F32 {
+                    let d = self.freg();
+                    self.i(&format!("ld.global.f32 {}, [{}];", d, a));
+                    return Ok(d);
+                }
                 let d = self.rd();
                 if k == IntK::I64 {
                     self.i(&format!("ld.global.s64 {}, [{}];", d, a));
@@ -135,6 +181,11 @@ impl<'a> Px<'a> {
             }
             ExprK::Unary(op, a) => {
                 let av = self.ex(a)?;
+                if is_f(&av) {
+                    let d = self.freg();
+                    self.i(&format!("neg.f32 {}, {};", d, av));
+                    return Ok(d);
+                }
                 let d = self.rd();
                 match op {
                     UOp::Neg => self.i(&format!("neg.s64 {}, {};", d, av)),
@@ -173,6 +224,35 @@ impl<'a> Px<'a> {
             ExprK::Binary(op, a, b) => {
                 let av = self.ex(a)?;
                 let bv = self.ex(b)?;
+                if is_f(&av) {
+                    // IEEE, round to nearest; explicit .rn also forbids
+                    // fusing a * b + c into one fma, matching the C build.
+                    let ins = match op {
+                        BOp::Add => "add.rn.f32",
+                        BOp::Sub => "sub.rn.f32",
+                        BOp::Mul => "mul.rn.f32",
+                        BOp::Div => "div.rn.f32",
+                        _ => "",
+                    };
+                    if !ins.is_empty() {
+                        let d = self.freg();
+                        self.i(&format!("{} {}, {}, {};", ins, d, av, bv));
+                        return Ok(d);
+                    }
+                    // C's comparisons: false on NaN, except != (unordered).
+                    let c = match op {
+                        BOp::Eq => "eq",
+                        BOp::Ne => "neu",
+                        BOp::Lt => "lt",
+                        BOp::Le => "le",
+                        BOp::Gt => "gt",
+                        _ => "ge",
+                    };
+                    let (p, d) = (self.pred(), self.rd());
+                    self.i(&format!("setp.{}.f32 {}, {}, {};", c, p, av, bv));
+                    self.i(&format!("selp.b64 {}, 1, 0, {};", d, p));
+                    return Ok(d);
+                }
                 let d = self.rd();
                 let cmp = match op {
                     BOp::Eq => Some("eq"),
@@ -225,6 +305,32 @@ impl<'a> Px<'a> {
             let ExprK::Var(n) = &args[0].k else { unreachable!() };
             return Ok(Some(self.arrs[n.as_str()].len.clone()));
         }
+        match name {
+            "to_f32" => {
+                let v = self.ex(&args[0])?;
+                let d = self.freg();
+                self.i(&format!("cvt.rn.f32.s64 {}, {};", d, v));
+                return Ok(Some(d));
+            }
+            "to_i64" => {
+                // Toward zero, saturating, NaN to 0, as klrt_f2i in C. PTX's
+                // cvt saturates, but turns NaN into i64::MIN, so test it.
+                let v = self.ex(&args[0])?;
+                let (d, p) = (self.rd(), self.pred());
+                self.i(&format!("cvt.rzi.s64.f32 {}, {};", d, v));
+                self.i(&format!("setp.nan.f32 {}, {}, {};", p, v, v));
+                self.i(&format!("selp.b64 {}, 0, {}, {};", d, d, p));
+                return Ok(Some(d));
+            }
+            "f32_bits" => {
+                let v = self.ex(&args[0])?;
+                let (r, d) = (self.r32(), self.rd());
+                self.i(&format!("mov.b32 {}, {};", r, v));
+                self.i(&format!("cvt.u64.u32 {}, {};", d, r));
+                return Ok(Some(d));
+            }
+            _ => {}
+        }
         if let Some(k) = crate::check::wrap_kind(name) {
             // + - * wrap modulo 2^64 in PTX, which is exact modulo 2^N;
             // then reduce into the type's range.
@@ -273,15 +379,17 @@ impl<'a> Px<'a> {
         self.callees.insert(name.to_string());
         let mut s = String::from("{\n");
         for (k, v) in vals.iter().enumerate() {
-            s += &format!("\t.param .b64 a{};\n\tst.param.b64 [a{}], {};\n", k, k, v);
+            let t = if is_f(v) { "f32" } else { "b64" };
+            s += &format!("\t.param .{t} a{k};\n\tst.param.{t} [a{k}], {v};\n", t = t, k = k, v = v);
         }
         let plist = if vals.is_empty() { String::new() } else { format!(", ({})", (0..vals.len()).map(|k| format!("a{}", k)).collect::<Vec<_>>().join(", ")) };
         let ret = if g.ret == Ty::Unit {
             s += &format!("\tcall.uni kl_{}{};\n", name, plist);
             None
         } else {
-            let d = self.rd();
-            s += &format!("\t.param .b64 rv;\n\tcall.uni (rv), kl_{}{};\n\tld.param.b64 {}, [rv];\n", name, plist, d);
+            let t = pty(g.ret);
+            let d = if g.ret == Ty::F32 { self.freg() } else { self.rd() };
+            s += &format!("\t.param .{t} rv;\n\tcall.uni (rv), kl_{}{};\n\tld.param.{t} {}, [rv];\n", name, plist, d, t = t);
             Some(d)
         };
         s += "\t}\n";
@@ -304,8 +412,8 @@ impl<'a> Px<'a> {
                     return Err(format!("declares '{}' of type {}", name, ty.name()));
                 }
                 let v = self.ex(init)?;
-                let d = self.rd();
-                self.i(&format!("mov.b64 {}, {};", d, v));
+                let d = self.like(&v);
+                self.i(&format!("{} {}, {};", Px::mov(&v), d, v));
                 self.vals.insert(name.clone(), d);
             }
             StmtK::Assign { name, path, val } => {
@@ -314,13 +422,15 @@ impl<'a> Px<'a> {
                 }
                 let v = self.ex(val)?;
                 let d = self.vals[name.as_str()].clone();
-                self.i(&format!("mov.b64 {}, {};", d, v));
+                self.i(&format!("{} {}, {};", Px::mov(&v), d, v));
             }
             StmtK::Store { name, idx, val } => {
                 let iv = self.ex(idx)?;
                 let vv = self.ex(val)?;
                 let (a, k) = self.addr(name, &iv);
-                if k == IntK::I64 {
+                if k == IntK::F32 {
+                    self.i(&format!("st.global.f32 [{}], {};", a, vv));
+                } else if k == IntK::I64 {
                     self.i(&format!("st.global.s64 [{}], {};", a, vv));
                 } else {
                     let r = self.r32();
@@ -356,7 +466,7 @@ impl<'a> Px<'a> {
             StmtK::Return(e) => {
                 if let Some(e) = e {
                     let v = self.ex(e)?;
-                    self.i(&format!("st.param.b64 [ret], {};", v));
+                    self.i(&format!("st.param.{} [ret], {};", if is_f(&v) { "f32" } else { "b64" }, v));
                 }
                 self.i("ret;");
             }
@@ -385,14 +495,14 @@ fn func_header(f: &Func) -> R<String> {
             ps.push(format!(".param .b64 p_{}", p.name));
             ps.push(format!(".param .b64 p_{}_len", p.name));
         } else if scalar_ok(p.ty) {
-            ps.push(format!(".param .b64 p_{}", p.name));
+            ps.push(format!(".param .{} p_{}", pty(p.ty), p.name));
         } else {
             return Err(format!("calls '{}', which takes a {}", f.name, p.ty.name()));
         }
     }
     let ret = match f.ret {
         Ty::Unit => String::new(),
-        t if scalar_ok(t) => "(.param .b64 ret) ".into(),
+        t if scalar_ok(t) => format!("(.param .{} ret) ", pty(t)),
         t => return Err(format!("calls '{}', which returns a {}", f.name, t.name())),
     };
     let plist = if ps.is_empty() { String::new() } else { format!(" ({})", ps.join(", ")) };
@@ -404,8 +514,8 @@ fn func(_prog: &Program, funcs: &HashMap<&str, &Func>, f: &Func) -> R<(String, B
     let header = func_header(f)?;
     let mut px = Px::new(funcs);
     for p in &f.params {
-        let d = px.rd();
-        px.i(&format!("ld.param.b64 {}, [p_{}];", d, p.name));
+        let d = if p.ty == Ty::F32 { px.freg() } else { px.rd() };
+        px.i(&format!("ld.param.{} {}, [p_{}];", pty(p.ty), d, p.name));
         if let Some(elem) = p.ty.elem() {
             let l = px.rd();
             px.i(&format!("ld.param.b64 {}, [p_{}_len];", l, p.name));
@@ -541,11 +651,11 @@ pub fn kernel(prog: &Program, funcs: &HashMap<&str, &Func>, id: usize, var: &str
             px.arrs.insert(n.clone(), Arr { ptr: d, len: l, elem });
             arrays.push((n.clone(), elem, written.contains(n)));
         } else if scalar_ok(*ty) {
-            let d = px.rd();
-            px.i(&format!("ld.param.b64 {}, [k_{}];", d, n));
-            params.push(format!(".param .b64 k_{}", n));
+            let d = if *ty == Ty::F32 { px.freg() } else { px.rd() };
+            px.i(&format!("ld.param.{} {}, [k_{}];", pty(*ty), d, n));
+            params.push(format!(".param .{} k_{}", pty(*ty), n));
             px.vals.insert(n.clone(), d);
-            scalars.push(n.clone());
+            scalars.push((n.clone(), *ty));
         } else {
             return Err(format!("uses '{}' of type {}", n, ty.name()));
         }
