@@ -1,12 +1,21 @@
 name: release
 # Push a tag like v0.1.0 to build keel for macOS and Linux and attach the
-# binaries to a GitHub release of that name.
+# binaries to a GitHub release of that name. To (re)build the release for
+# an existing tag, run this workflow by hand with that tag as input.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.1.0"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -14,21 +23,27 @@ jobs:
       matrix:
         include:
           - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          # GitHub no longer offers Intel macOS runners: cross-compile.
+          - { os: macos-14, target: x86_64-apple-darwin, cross: true }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: Build
-        run: cargo build --release
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
       - name: Smoke test
-        run: ./target/release/keel explain V-OVERFLOW
+        if: ${{ !matrix.cross }}
+        run: ./target/${{ matrix.target }}/release/keel explain V-OVERFLOW
       - name: Package
         run: |
-          name=keel-${GITHUB_REF_NAME}-${{ matrix.target }}
+          name=keel-${TAG}-${{ matrix.target }}
           mkdir "$name"
-          cp target/release/keel README.md LICENSE LICENSING.md "$name"/
+          cp target/${{ matrix.target }}/release/keel README.md LICENSE LICENSING.md "$name"/
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
@@ -38,7 +53,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -47,5 +62,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" keel-*.tar.gz keel-*.tar.gz.sha256 \
-            --repo "$GITHUB_REPOSITORY" --title "Keel $GITHUB_REF_NAME" --generate-notes
+          gh release create "$TAG" keel-*.tar.gz keel-*.tar.gz.sha256 \
+            --repo "$GITHUB_REPOSITORY" --title "Keel $TAG" --generate-notes --verify-tag
