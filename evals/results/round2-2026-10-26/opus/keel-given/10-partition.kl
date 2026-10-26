@@ -1,0 +1,63 @@
+spec fn below(xs: &[i64], n: i64, p: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { below(&xs, n - 1, p) + (if xs[n - 1] < p { 1 } else { 0 }) }
+}
+
+lemma below_mono(xs: &[i64], i: i64, n: i64, p: i64)
+  requires 0 <= i && i <= n && n <= len(xs)
+  ensures below(&xs, i, p) <= below(&xs, n, p)
+  ensures i - below(&xs, i, p) <= n - below(&xs, n, p)
+  decreases n - i
+{
+  if i < n {
+    below_mono(&xs, i, n - 1, p);
+  }
+}
+
+fn partition(xs: &mut [i64], p: i64, orig: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  ensures result == below(&orig, len(orig), p)
+  ensures forall j in 0..len(orig) { orig[j] < p ==> xs[below(&orig, j, p)] == orig[j] }
+  ensures forall j in 0..len(orig) { orig[j] >= p ==> xs[(result + j) - below(&orig, j, p)] == orig[j] }
+{
+  let n: i64 = len(xs);
+  var c: i64 = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant 0 <= c && c <= i
+    invariant c == below(&orig, i, p)
+    decreases n - i
+  {
+    if orig[i] < p {
+      c = c + 1;
+    }
+    i = i + 1;
+  }
+  var b: i64 = 0;
+  var k: i64 = 0;
+  while k < n
+    invariant 0 <= k && k <= n
+    invariant len(xs) == n && len(orig) == n
+    invariant 0 <= b && b <= k
+    invariant b == below(&orig, k, p)
+    invariant c == below(&orig, n, p)
+    invariant forall j in 0..k { orig[j] < p ==> (0 <= below(&orig, j, p) && below(&orig, j, p) < b && xs[below(&orig, j, p)] == orig[j]) }
+    invariant forall j in 0..k { orig[j] >= p ==> (0 <= j - below(&orig, j, p) && j - below(&orig, j, p) < k - b && xs[(c + j) - below(&orig, j, p)] == orig[j]) }
+    decreases n - k
+  {
+    below_mono(&orig, k + 1, n, p);
+    if orig[k] < p {
+      xs[b] = orig[k];
+      b = b + 1;
+    } else {
+      xs[(c + k) - b] = orig[k];
+    }
+    k = k + 1;
+  }
+  return c;
+}

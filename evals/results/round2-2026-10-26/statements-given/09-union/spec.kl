@@ -1,0 +1,13 @@
+fn union(a: &[i64], b: &[i64], out: &mut [i64]) -> i64
+  requires len(a) <= 1_000_000 && len(b) <= 1_000_000
+  requires len(out) == len(a) + len(b)
+  requires forall i in 0..len(a) { forall j in i..len(a) { a[i] <= a[j] } }
+  requires forall i in 0..len(b) { forall j in i..len(b) { b[i] <= b[j] } }
+  ensures 0 <= result && result <= len(out)
+  ensures forall s in 0..result { forall t in (s + 1)..result { out[s] < out[t] } }
+  ensures forall i in 0..len(a) { exists t in 0..result { out[t] == a[i] } }
+  ensures forall j in 0..len(b) { exists t in 0..result { out[t] == b[j] } }
+  ensures forall t in 0..result { (exists i in 0..len(a) { a[i] == out[t] }) || (exists j in 0..len(b) { b[j] == out[t] }) }
+{
+  // write the body here
+}

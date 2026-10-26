@@ -1,0 +1,45 @@
+spec fn shift(k: i64, n: i64) -> i64
+  requires n > 0
+{
+  if (k % n) < 0 { (k % n) + n } else { k % n }
+}
+
+fn rotate(xs: &mut [i64], k: i64, orig: &[i64])
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  ensures forall t in 0..len(xs) { xs[t] == (if t >= shift(k, len(xs)) { orig[t - shift(k, len(xs))] } else { orig[(t + len(xs)) - shift(k, len(xs))] }) }
+{
+  let n: i64 = len(xs);
+  if n == 0 {
+    return;
+  }
+  var r: i64 = k % n;
+  if r < 0 {
+    r = r + n;
+  }
+  assert r == shift(k, n);
+  let tmp: [i64] = array(n, 0);
+  var t: i64 = 0;
+  while t < n
+    invariant 0 <= t && t <= n
+    invariant forall i in 0..t { tmp[i] == (if i >= r { orig[i - r] } else { orig[(i + n) - r] }) }
+    decreases n - t
+  {
+    if t >= r {
+      tmp[t] = xs[t - r];
+    } else {
+      tmp[t] = xs[(t + n) - r];
+    }
+    t = t + 1;
+  }
+  var u: i64 = 0;
+  while u < n
+    invariant 0 <= u && u <= n
+    invariant forall i in 0..u { xs[i] == tmp[i] }
+    decreases n - u
+  {
+    xs[u] = tmp[u];
+    u = u + 1;
+  }
+}

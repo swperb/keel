@@ -1,0 +1,33 @@
+spec fn srcidx(d: i64, s: i64, n: i64) -> i64 { if d - s < 0 { (d - s) + n } else { if d - s >= n { (d - s) - n } else { d - s } } }
+
+fn rotate(xs: &mut [i64], k: i64, orig: &[i64])
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1_000_000
+  requires forall i in 0..len(xs) { orig[i] == xs[i] }
+  ensures len(xs) == len(orig)
+  ensures forall d in 0..len(xs) { xs[d] == orig[srcidx(d, k % len(xs), len(xs))] }
+{
+  let n: i64 = len(xs);
+  if n == 0 {
+    return;
+  }
+  let s: i64 = (k % n);
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant len(xs) == n
+    invariant len(orig) == n
+    invariant forall d in 0..i { xs[d] == orig[srcidx(d, s, n)] }
+    decreases n - i
+  {
+    var src: i64 = i - s;
+    if src < 0 {
+      src = src + n;
+    } else if src >= n {
+      src = src - n;
+    }
+    xs[i] = orig[src];
+    i = i + 1;
+  }
+  return;
+}

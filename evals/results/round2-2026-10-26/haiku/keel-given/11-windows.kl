@@ -1,0 +1,109 @@
+spec fn total(xs: &[i64], n: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { total(&xs, n - 1) + xs[n - 1] }
+}
+
+lemma total_step(xs: &[i64], k: i64)
+  requires 0 <= k && k < len(xs)
+  ensures total(&xs, k + 1) == total(&xs, k) + xs[k]
+{
+}
+
+lemma total_bound(xs: &[i64], n: i64)
+  requires 0 <= n && n <= len(xs)
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  ensures 0 - (1_000_000_000 * n) <= total(&xs, n) && total(&xs, n) <= 1_000_000_000 * n
+  decreases n
+{
+  if n > 0 {
+    total_bound(&xs, n - 1);
+    total_step(&xs, n - 1);
+  }
+}
+
+fn prefix(xs: &[i64], pre: &mut [i64])
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  requires len(pre) == len(xs) + 1
+  ensures forall k in 0..len(pre) { pre[k] == total(&xs, k) }
+{
+  let n: i64 = len(xs);
+  pre[0] = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant len(xs) == n && len(pre) == n + 1
+    invariant forall q in 0..(i + 1) { pre[q] == total(&xs, q) }
+    decreases n - i
+  {
+    total_bound(&xs, i);
+    total_step(&xs, i);
+    pre[i + 1] = pre[i] + xs[i];
+    i = i + 1;
+  }
+}
+
+fn range_sum(xs: &[i64], pre: &[i64], lo: i64, hi: i64) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  requires len(pre) == len(xs) + 1
+  requires forall k in 0..len(pre) { pre[k] == total(&xs, k) }
+  requires 0 <= lo && lo <= hi && hi <= len(xs)
+  ensures result == total(&xs, hi) - total(&xs, lo)
+{
+  total_bound(&xs, hi);
+  total_bound(&xs, lo);
+  return pre[hi] - pre[lo];
+}
+
+fn best_window(xs: &[i64], w: i64) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  ensures (w < 1 || w > len(xs)) ==> result == -9223372036854775808
+  ensures (1 <= w && w <= len(xs)) ==> exists s in 0..((len(xs) - w) + 1) { result == total(&xs, s + w) - total(&xs, s) }
+  ensures (1 <= w && w <= len(xs)) ==> forall s in 0..((len(xs) - w) + 1) { result >= total(&xs, s + w) - total(&xs, s) }
+{
+  let n: i64 = len(xs);
+  if w < 1 || w > n {
+    return -9223372036854775808;
+  }
+  var cur: i64 = 0;
+  var j: i64 = 0;
+  while j < w
+    invariant 0 <= j && j <= w && w <= n
+    invariant len(xs) == n
+    invariant cur == total(&xs, j)
+    decreases w - j
+  {
+    total_bound(&xs, j);
+    total_step(&xs, j);
+    cur = cur + xs[j];
+    j = j + 1;
+  }
+  var best: i64 = cur;
+  var bi: i64 = 0;
+  var s: i64 = 0;
+  while s < n - w
+    invariant 0 <= s && s <= n - w
+    invariant len(xs) == n
+    invariant 0 <= bi && bi <= s
+    invariant cur == total(&xs, s + w) - total(&xs, s)
+    invariant best == total(&xs, bi + w) - total(&xs, bi)
+    invariant forall t in 0..(s + 1) { best >= total(&xs, t + w) - total(&xs, t) }
+    decreases (n - w) - s
+  {
+    total_bound(&xs, s + w);
+    total_bound(&xs, s);
+    total_step(&xs, s);
+    total_step(&xs, s + w);
+    cur = (cur - xs[s]) + xs[s + w];
+    s = s + 1;
+    if cur > best {
+      best = cur;
+      bi = s;
+    }
+  }
+  return best;
+}

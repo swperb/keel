@@ -1,0 +1,56 @@
+spec fn below(xs: &[i64], n: i64, p: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { below(&xs, n - 1, p) + (if xs[n - 1] < p { 1 } else { 0 }) }
+}
+
+fn partition(xs: &mut [i64], p: i64, orig: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  ensures result == below(&orig, len(orig), p)
+  ensures forall j in 0..len(orig) { orig[j] < p ==> xs[below(&orig, j, p)] == orig[j] }
+  ensures forall j in 0..len(orig) { orig[j] >= p ==> xs[(result + j) - below(&orig, j, p)] == orig[j] }
+{
+  let n: i64 = len(xs);
+  let tmp: [i64] = array(n, 0);
+  var c: i64 = 0;
+  var d: i64 = 0;
+  var j: i64 = 0;
+  while j < n
+    invariant 0 <= j && j <= n
+    invariant n == len(xs) && n == len(orig) && n == len(tmp)
+    invariant 0 <= c && c <= j
+    invariant c == below(&orig, j, p)
+    invariant c + d == j
+    invariant forall m in 0..j { orig[m] < p ==> (below(&orig, m, p) < c && xs[below(&orig, m, p)] == orig[m]) }
+    invariant forall m in 0..j { orig[m] >= p ==> (0 <= m - below(&orig, m, p) && m - below(&orig, m, p) < d && tmp[m - below(&orig, m, p)] == orig[m]) }
+    decreases n - j
+  {
+    assert below(&orig, j + 1, p) == below(&orig, j, p) + (if orig[j] < p { 1 } else { 0 });
+    if orig[j] < p {
+      xs[c] = orig[j];
+      c = c + 1;
+    } else {
+      tmp[d] = orig[j];
+      d = d + 1;
+    }
+    j = j + 1;
+  }
+  var e: i64 = 0;
+  while e < d
+    invariant 0 <= e && e <= d
+    invariant n == len(xs) && n == len(orig) && n == len(tmp)
+    invariant c + d == n
+    invariant c == below(&orig, n, p)
+    invariant forall m in 0..n { orig[m] < p ==> (below(&orig, m, p) < c && xs[below(&orig, m, p)] == orig[m]) }
+    invariant forall m in 0..n { orig[m] >= p ==> (0 <= m - below(&orig, m, p) && m - below(&orig, m, p) < d && tmp[m - below(&orig, m, p)] == orig[m]) }
+    invariant forall m in 0..n { (orig[m] >= p && m - below(&orig, m, p) < e) ==> xs[c + (m - below(&orig, m, p))] == orig[m] }
+    decreases d - e
+  {
+    xs[c + e] = tmp[e];
+    e = e + 1;
+  }
+  return c;
+}

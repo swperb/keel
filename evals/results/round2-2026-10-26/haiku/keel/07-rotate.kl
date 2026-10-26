@@ -1,0 +1,17 @@
+fn rotate(xs: &mut [i64], k: i64, orig: &[i64])
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1000000
+{
+  let n: i64 = len(xs);
+  if n > 0 {
+    let s: i64 = ((k % n) + n) % n;
+    var j: i64 = 0;
+    while j < n
+      invariant 0 <= j && j <= n
+      decreases n - j
+    {
+      xs[(j + s) % n] = orig[j];
+      j = j + 1;
+    }
+  }
+}

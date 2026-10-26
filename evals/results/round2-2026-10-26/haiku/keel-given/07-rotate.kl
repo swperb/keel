@@ -1,0 +1,37 @@
+spec fn shift(k: i64, n: i64) -> i64
+  requires n > 0
+{
+  if (k % n) < 0 { (k % n) + n } else { k % n }
+}
+
+fn rotate(xs: &mut [i64], k: i64, orig: &[i64])
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  ensures forall t in 0..len(xs) { xs[t] == (if t >= shift(k, len(xs)) { orig[t - shift(k, len(xs))] } else { orig[(t + len(xs)) - shift(k, len(xs))] }) }
+{
+  let n: i64 = len(xs);
+  if n > 0 {
+    var s: i64 = k % n;
+    if s < 0 {
+      s = s + n;
+    }
+    assert s == shift(k, n);
+    var t: i64 = 0;
+    while t < n
+      invariant 0 <= t && t <= n
+      invariant len(xs) == n && len(orig) == n
+      invariant 0 <= s && s < n
+      invariant s == shift(k, n)
+      invariant forall q in 0..t { xs[q] == (if q >= s { orig[q - s] } else { orig[(q + n) - s] }) }
+      decreases n - t
+    {
+      if t >= s {
+        xs[t] = orig[t - s];
+      } else {
+        xs[t] = orig[(t + n) - s];
+      }
+      t = t + 1;
+    }
+  }
+}

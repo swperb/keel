@@ -1,0 +1,12 @@
+fn dedup(xs: &mut [i64], orig: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  requires forall i in 0..len(orig) { forall j in i..len(orig) { orig[i] <= orig[j] } }
+  ensures 0 <= result && result <= len(xs)
+  ensures forall s in 0..result { forall t in (s + 1)..result { xs[s] < xs[t] } }
+  ensures forall j in 0..len(orig) { exists t in 0..result { xs[t] == orig[j] } }
+  ensures forall t in 0..result { exists j in 0..len(orig) { orig[j] == xs[t] } }
+{
+  // write the body here
+}

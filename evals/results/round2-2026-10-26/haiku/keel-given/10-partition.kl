@@ -1,0 +1,79 @@
+spec fn below(xs: &[i64], n: i64, p: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { below(&xs, n - 1, p) + (if xs[n - 1] < p { 1 } else { 0 }) }
+}
+
+lemma below_step(xs: &[i64], j: i64, p: i64)
+  requires 0 <= j && j < len(xs)
+  ensures below(&xs, j + 1, p) == below(&xs, j, p) + (if xs[j] < p { 1 } else { 0 })
+{
+}
+
+lemma below_mono(xs: &[i64], m: i64, n: i64, p: i64)
+  requires 0 <= m && m <= n && n <= len(xs)
+  ensures (n - below(&xs, n, p)) >= (m - below(&xs, m, p))
+  decreases n - m
+{
+  if m < n {
+    below_mono(&xs, m, n - 1, p);
+    below_step(&xs, n - 1, p);
+  }
+}
+
+fn partition(xs: &mut [i64], p: i64, orig: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  ensures result == below(&orig, len(orig), p)
+  ensures forall j in 0..len(orig) { orig[j] < p ==> xs[below(&orig, j, p)] == orig[j] }
+  ensures forall j in 0..len(orig) { orig[j] >= p ==> xs[(result + j) - below(&orig, j, p)] == orig[j] }
+{
+  let n: i64 = len(xs);
+  var a: i64 = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant len(xs) == n && len(orig) == n
+    invariant 0 <= a && a <= i
+    invariant a == below(&orig, i, p)
+    invariant forall j in 0..i { below(&orig, j + 1, p) == below(&orig, j, p) + (if orig[j] < p { 1 } else { 0 }) }
+    invariant forall j in 0..i { orig[j] < p ==> below(&orig, j + 1, p) <= a }
+    invariant forall j in 0..i { orig[j] < p ==> xs[below(&orig, j, p)] == orig[j] }
+    decreases n - i
+  {
+    below_step(&orig, i, p);
+    if orig[i] < p {
+      xs[a] = orig[i];
+      a = a + 1;
+    }
+    i = i + 1;
+  }
+  let cnt: i64 = a;
+  var b: i64 = cnt;
+  var k: i64 = 0;
+  while k < n
+    invariant 0 <= k && k <= n
+    invariant len(xs) == n && len(orig) == n
+    invariant cnt == below(&orig, n, p)
+    invariant 0 <= cnt && cnt <= n
+    invariant cnt <= b && b == (cnt + k) - below(&orig, k, p)
+    invariant forall j in 0..n { below(&orig, j + 1, p) == below(&orig, j, p) + (if orig[j] < p { 1 } else { 0 }) }
+    invariant forall j in 0..n { orig[j] < p ==> below(&orig, j + 1, p) <= cnt }
+    invariant forall j in 0..n { orig[j] < p ==> xs[below(&orig, j, p)] == orig[j] }
+    invariant forall j in 0..k { (j + 1) - below(&orig, j + 1, p) <= k - below(&orig, k, p) }
+    invariant forall j in 0..k { orig[j] >= p ==> (cnt + j) - below(&orig, j, p) < b }
+    invariant forall j in 0..k { orig[j] >= p ==> xs[(cnt + j) - below(&orig, j, p)] == orig[j] }
+    decreases n - k
+  {
+    below_step(&orig, k, p);
+    below_mono(&orig, k + 1, n, p);
+    if orig[k] >= p {
+      xs[b] = orig[k];
+      b = b + 1;
+    }
+    k = k + 1;
+  }
+  return cnt;
+}

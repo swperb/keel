@@ -1,0 +1,41 @@
+fn dedup(xs: &mut [i64], orig: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  requires forall i in 0..len(orig) { forall j in i..len(orig) { orig[i] <= orig[j] } }
+  ensures 0 <= result && result <= len(xs)
+  ensures forall s in 0..result { forall t in (s + 1)..result { xs[s] < xs[t] } }
+  ensures forall j in 0..len(orig) { exists t in 0..result { xs[t] == orig[j] } }
+  ensures forall t in 0..result { exists j in 0..len(orig) { orig[j] == xs[t] } }
+{
+  let n: i64 = len(xs);
+  if n == 0 {
+    return 0;
+  }
+  // pos[j]: where orig[j] ended up; src[t]: where xs[t] came from.
+  // They exist only to carry the proof.
+  let pos: [i64] = array(n, 0);
+  let src: [i64] = array(n, 0);
+  var w: i64 = 1;
+  var i: i64 = 1;
+  while i < n
+    invariant 1 <= w && w <= i && i <= n
+    invariant forall k in i..n { xs[k] == orig[k] }
+    invariant xs[w - 1] == orig[i - 1]
+    invariant forall s in 0..w { forall t in (s + 1)..w { xs[s] < xs[t] } }
+    invariant forall j in 0..i { 0 <= pos[j] && pos[j] < w && xs[pos[j]] == orig[j] }
+    invariant forall t in 0..w { 0 <= src[t] && src[t] < i && orig[src[t]] == xs[t] }
+    decreases n - i
+  {
+    assert orig[i - 1] <= orig[i];
+    if xs[i] != xs[w - 1] {
+      assert xs[w - 1] < xs[i];
+      xs[w] = xs[i];
+      src[w] = i;
+      w = w + 1;
+    }
+    pos[i] = w - 1;
+    i = i + 1;
+  }
+  return w;
+}

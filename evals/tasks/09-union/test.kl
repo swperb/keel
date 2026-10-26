@@ -1,0 +1,58 @@
+io fn show(xs: &[i64], n: i64)
+  requires 0 <= n && n <= len(xs)
+{
+  print(n);
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    decreases n - i
+  {
+    print(xs[i]);
+    i = i + 1;
+  }
+}
+
+io fn main() {
+  let e: [i64] = array(0, 0);
+  let o0: [i64] = array(0, 0);
+  let r0: i64 = union(&e, &e, &mut o0);
+  show(&o0, r0);
+  let a: [i64] = array(5, 0);
+  a[0] = -9223372036854775808;
+  a[1] = 1;
+  a[2] = 1;
+  a[3] = 4;
+  a[4] = 9223372036854775807;
+  let o1: [i64] = array(5, 0);
+  let r1: i64 = union(&a, &e, &mut o1);
+  show(&o1, r1);
+  let o2: [i64] = array(5, 0);
+  let r2: i64 = union(&e, &a, &mut o2);
+  show(&o2, r2);
+  let b: [i64] = array(6, 0);
+  b[0] = 0;
+  b[1] = 1;
+  b[2] = 4;
+  b[3] = 4;
+  b[4] = 5;
+  b[5] = 9223372036854775807;
+  let o3: [i64] = array(11, 0);
+  let r3: i64 = union(&a, &b, &mut o3);
+  show(&o3, r3);
+  let s: [i64] = array(1_000_000, 3);
+  let t: [i64] = array(1_000_000, 3);
+  let o4: [i64] = array(2_000_000, 0);
+  let r4: i64 = union(&s, &t, &mut o4);
+  show(&o4, r4);
+  let c: [i64] = array(3, 0);
+  c[0] = 10;
+  c[1] = 20;
+  c[2] = 30;
+  let d: [i64] = array(3, 0);
+  d[0] = 1;
+  d[1] = 2;
+  d[2] = 3;
+  let o5: [i64] = array(6, 0);
+  let r5: i64 = union(&c, &d, &mut o5);
+  show(&o5, r5);
+}

@@ -1,0 +1,47 @@
+{
+ "sonnet/rust": {
+  "tokens": 53196,
+  "tool_uses": 3,
+  "seconds": 25.1
+ },
+ "opus/rust": {
+  "tokens": 53559,
+  "tool_uses": 4,
+  "seconds": 28.4
+ },
+ "haiku/rust": {
+  "tokens": 68268,
+  "tool_uses": 22,
+  "seconds": 69.4
+ },
+ "sonnet/keel-given": {
+  "tokens": 69273,
+  "tool_uses": 6,
+  "seconds": 104.4
+ },
+ "sonnet/keel": {
+  "tokens": 66205,
+  "tool_uses": 7,
+  "seconds": 121.4
+ },
+ "opus/keel": {
+  "tokens": 65405,
+  "tool_uses": 5,
+  "seconds": 136.8
+ },
+ "opus/keel-given": {
+  "tokens": 76655,
+  "tool_uses": 9,
+  "seconds": 188.4
+ },
+ "haiku/keel": {
+  "tokens": 95404,
+  "tool_uses": 25,
+  "seconds": 211.4
+ },
+ "haiku/keel-given": {
+  "tokens": 118756,
+  "tool_uses": 17,
+  "seconds": 322.6
+ }
+}
