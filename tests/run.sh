@@ -15,6 +15,7 @@ expect_run primes "1270607 "
 expect_run shapes "7 100 12 0 "
 expect_run proofs "3000 "
 expect_run msort "311 1074053543 2147483573 "
+expect_run bits "120 6 90 2176876992 -42 -5 12 "
 # Verification is deterministic: the same file gives byte-identical output.
 a=$($K check examples/msort.kl 2>&1); b=$($K check examples/msort.kl 2>&1)
 if [ "$a" = "$b" ]; then echo "ok   deterministic msort"; else echo "FAIL deterministic msort"; fail=1; fi

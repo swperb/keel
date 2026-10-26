@@ -89,7 +89,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
     Some(match code {
         "E-LEX" => "Unrecognized character or malformed literal.",
         "E-PARSE" => "The program does not match Keel's grammar. Keel has exactly one syntax for each construct.",
-        "E-PAREN" => "Keel has no operator precedence between different arithmetic or logical operators. \
+        "E-PAREN" => "Keel has no operator precedence between different arithmetic, bitwise or logical operators. \
                       `a + b * c` and `a && b || c` are rejected; write `a + (b * c)` or `(a && b) || c`. \
                       Chains of one associative operator (`a + b - c`, `a * b * c`, `a && b && c`) are fine.",
         "E-NAME" => "Unknown or duplicate name. Keel forbids shadowing: a new local, parameter or bound variable may not reuse a name that is still in scope.",
@@ -123,6 +123,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E-MATCH" => "A match must list every variant of the enum exactly once, in declaration order, with a binder exactly when the variant has a payload. There is no wildcard arm.",
         "V-VACUOUS" => "The function's requires clauses can never all be true. Any ensures would then be provable from a contradiction, so this is rejected.",
         "V-DEAD" => "This branch, match arm or loop body can never execute given the conditions and invariants that guard it. Dead code hides untested logic; delete it or fix the guard.",
+        "V-SHIFT" => "A shift amount may be negative or at least 64. In C such a shift is undefined; prove 0 <= amount < 64 with a requires clause or a test.",
         "V-SLICE" => "The verifier could not prove a slice's bounds satisfy 0 <= lo <= hi <= len(array).",
         "V-DISJOINT" => "Two borrows of one array, at least one exclusive, may touch overlapping indices: in one call, or across par branches (a data race). Prove the slice ranges disjoint, e.g. [lo..mid] and [mid..hi].",
         "V-UNKNOWN" => "The solver used up its fixed work budget, or rejected the proof script. Budgets count solver steps, not seconds, so the verdict is the same on every run. A quantifier that reads xs[t] and xs[t + 1] can make the solver instantiate it forever; state such facts pairwise (forall a in lo..hi { forall b in a..hi { .. } }). Otherwise strengthen invariants or split the function. A rejected script is a keel bug.",

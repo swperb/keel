@@ -187,6 +187,8 @@ pub struct Stmt {
 pub enum UOp {
     Neg,
     Not,
+    /// `~a`: bitwise complement, `-a - 1`.
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,6 +207,14 @@ pub enum BOp {
     And,
     Or,
     Implies,
+    /// Bitwise operators on 64-bit two's complement.
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// `a << b` is `a * 2^b` and `a >> b` is `floor(a / 2^b)`; code must
+    /// prove `0 <= b < 64` (and, for `<<`, that the result fits in i64).
+    Shl,
+    Shr,
 }
 
 impl BOp {
@@ -224,6 +234,11 @@ impl BOp {
             BOp::And => "&&",
             BOp::Or => "||",
             BOp::Implies => "==>",
+            BOp::BitAnd => "&",
+            BOp::BitOr => "|",
+            BOp::BitXor => "^",
+            BOp::Shl => "<<",
+            BOp::Shr => ">>",
         }
     }
 }

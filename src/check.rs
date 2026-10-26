@@ -152,8 +152,8 @@ impl<'a> Checker<'a> {
             ExprK::Unary(op, a) => {
                 let t = self.expr(a, ctx, false);
                 match op {
-                    UOp::Neg => {
-                        self.want(t, Ty::I64, a.span, "operand of '-'");
+                    UOp::Neg | UOp::BitNot => {
+                        self.want(t, Ty::I64, a.span, if *op == UOp::Neg { "operand of '-'" } else { "operand of '~'" });
                         Ty::I64
                     }
                     UOp::Not => {
@@ -166,7 +166,7 @@ impl<'a> Checker<'a> {
                 let ta = self.expr(a, ctx, false);
                 let tb = self.expr(b, ctx, false);
                 match op {
-                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div | BOp::Mod => {
+                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div | BOp::Mod | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::Shl | BOp::Shr => {
                         self.want(ta, Ty::I64, a.span, "arithmetic operand");
                         self.want(tb, Ty::I64, b.span, "arithmetic operand");
                         Ty::I64

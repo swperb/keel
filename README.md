@@ -40,7 +40,8 @@ exactly what is wrong. Keel is designed around that.
 ### No precedence, on purpose
 
 `a + b * c` is a compile error (E-PAREN). So is `a && b || c`. You write
-`a + (b * c)`. Chains of one associative operator are fine. This removes an
+`a + (b * c)`. Chains of one associative operator are fine. Bitwise
+operators follow the same rule: `a & b | c` and `a + b << 2` are errors. This removes an
 entire class of misreadings, for models and people alike.
 
 ## Compared to Bend
@@ -192,6 +193,7 @@ the pairwise form, which typically proves in under a second.
 - Ghost code: `spec fn` (single-expression math definitions, spec-only `if c { a } else { b }`), `lemma` (no loops; prove by cases, `assert` and recursion).
 - Specs may also call an ordinary `fn` that is pure, loop-free and non-recursive, takes no `&mut`, and returns `i64`, `bool` or a struct/enum: write a helper like `tiles(mode)` once and use it in both code and contracts. Its body (`let`, `var`, `if`, `return`) is lifted to a definition.
 - Statements: `let`, `var`, assignment, `xs[i] = v`, `if`/`else`, `while ... invariant ... decreases ...`, `return`, `assert`, `par`.
+- Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>` on `i64` (two's complement, as in C), and `0x`/`0b` literals. A shift amount must be proven in `0..64` (`V-SHIFT`), and `a << b` must fit in i64. `>>` is arithmetic (rounds toward negative infinity, unlike `/`). The verifier reads masks `x & (2^k - 1)` as `x mod 2^k` and other operators as 64-bit vector operations.
 - Specs: `forall x in lo..hi { P }`, `forall v: i64 { P }` (every i64), `exists`, `==>`, `len(xs)`.
 - Multisets: `count(&xs, lo, hi, v)` is the number of times `v` occurs in `xs[lo..hi]`; `old(e)` in `ensures`, invariants and asserts is `e` on function entry. Together they state permutations: `ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }`.
 - Slices: `&xs[lo..hi]` and `&mut xs[lo..hi]` borrow a range; the callee sees an array of length `hi - lo`. Two borrows of one array may coexist in a call or across `par` branches only if both are slices and the verifier proves the ranges disjoint.

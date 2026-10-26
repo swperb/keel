@@ -155,10 +155,16 @@ impl<'a> Cg<'a> {
             ExprK::Index(n, i) => format!("k_{}[{}]", n, self.ex(i)),
             ExprK::Unary(UOp::Neg, a) => format!("(-{})", self.ex(a)),
             ExprK::Unary(UOp::Not, a) => format!("(!{})", self.ex(a)),
+            ExprK::Unary(UOp::BitNot, a) => format!("(~{})", self.ex(a)),
             ExprK::Binary(op, a, b) => {
                 let (a, b) = (self.ex(a), self.ex(b));
                 match op {
                     BOp::Implies => format!("(!{} || {})", a, b),
+                    // Shifting a negative value left is undefined in C; the
+                    // unsigned shift is not, and equals a * 2^b when that fits,
+                    // which the verifier proved. Right shift of a negative
+                    // value is arithmetic on every supported compiler.
+                    BOp::Shl => format!("((int64_t)((uint64_t){} << {}))", a, b),
                     _ => format!("({} {} {})", a, op.sym(), b),
                 }
             }

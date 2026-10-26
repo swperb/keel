@@ -1,0 +1,6 @@
+// expect: V-OVERFLOW
+fn f(w: i64) -> i64
+  requires 0 <= w && w < 4294967296
+{
+  return w << 32;
+}

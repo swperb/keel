@@ -21,8 +21,8 @@ const KEYWORDS: &[&str] = &[
 
 // Longest first so `==>` wins over `==`.
 const PUNCT: &[&str] = &[
-    "==>", "=>", "->", "==", "!=", "<=", ">=", "&&", "||", "..", ".", "+", "-", "*", "/", "%", "<", ">", "!", "=",
-    "(", ")", "{", "}", "[", "]", ",", ":", ";", "&",
+    "==>", "=>", "->", "==", "!=", "<<", ">>", "<=", ">=", "&&", "||", "..", ".", "+", "-", "*", "/", "%", "<", ">", "!", "=",
+    "(", ")", "{", "}", "[", "]", ",", ":", ";", "&", "|", "^", "~",
 ];
 
 fn lex(src: &str) -> Result<Vec<(Tok, Span)>, Diag> {
@@ -65,12 +65,25 @@ fn lex(src: &str) -> Result<Vec<(Tok, Span)>, Diag> {
         }
         if c.is_ascii_digit() {
             let s = i;
-            while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'_') {
+            // 0x.. and 0b.. literals, for masks.
+            let radix = match b.get(i + 1) {
+                Some(b'x' | b'X') if c == b'0' => 16,
+                Some(b'b' | b'B') if c == b'0' => 2,
+                _ => 10,
+            };
+            if radix != 10 {
+                i += 2;
+            }
+            let ds = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                 i += 1;
             }
             col += (i - s) as u32;
-            let digits: String = src[s..i].chars().filter(|c| *c != '_').collect();
-            match digits.parse::<i128>() {
+            let digits: String = src[ds..i].chars().filter(|c| *c != '_').collect();
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return Err(Diag::new("E-LEX", span, format!("malformed integer literal '{}'", &src[s..i])));
+            }
+            match i128::from_str_radix(&digits, radix) {
                 Ok(v) if v <= (i64::MAX as i128) + 1 => out.push((Tok::Int(v), span)),
                 _ => return Err(Diag::new("E-LEX", span, "integer literal does not fit in i64")),
             }
@@ -580,7 +593,8 @@ impl Parser {
     }
 
     // arith := unary (op unary)* where all ops belong to one class:
-    // {+,-} chains, {*} chains, {/} and {%} take exactly two operands.
+    // {+,-}, {*}, {&}, {|} and {^} chain; {/}, {%}, {<<} and {>>} take
+    // exactly two operands. So `a & b | c` and `a + b << 2` need parentheses.
     fn arith(&mut self) -> PResult<Expr> {
         let mut lhs = self.unary()?;
         let mut class: Option<u8> = None;
@@ -591,10 +605,15 @@ impl Parser {
                 Tok::P("*") => (BOp::Mul, 1),
                 Tok::P("/") => (BOp::Div, 2),
                 Tok::P("%") => (BOp::Mod, 3),
+                Tok::P("&") => (BOp::BitAnd, 4),
+                Tok::P("|") => (BOp::BitOr, 5),
+                Tok::P("^") => (BOp::BitXor, 6),
+                Tok::P("<<") => (BOp::Shl, 7),
+                Tok::P(">>") => (BOp::Shr, 8),
                 _ => break,
             };
             if let Some(prev) = class {
-                if prev != c || c >= 2 {
+                if prev != c || matches!(c, 2 | 3 | 7 | 8) {
                     return Err(Diag::new(
                         "E-PAREN",
                         self.span(),
@@ -626,6 +645,11 @@ impl Parser {
             self.bump();
             let e = self.unary()?;
             return Ok(Expr { k: ExprK::Unary(UOp::Not, Box::new(e)), span });
+        }
+        if self.is_p("~") {
+            self.bump();
+            let e = self.unary()?;
+            return Ok(Expr { k: ExprK::Unary(UOp::BitNot, Box::new(e)), span });
         }
         let mut e = self.primary()?;
         while self.is_p(".") {

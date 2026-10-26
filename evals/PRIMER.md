@@ -7,6 +7,10 @@ terminates. If `keel check file.kl` succeeds, those facts are machine-checked.
 
 ## Types and values
 - `i64` (64-bit signed), `bool`. No other integer types, no floats, no strings.
+- Bitwise operators `& | ^ ~ << >>` work on `i64` as in C, with `0xFF` and
+  `0b1010` literals. Shift amounts must be proven in `0..64`; `>>` rounds
+  down (`-5 >> 1 == -3`), unlike `/`. Mixing them with other operators needs
+  parentheses: `(w >> 4) & 0xF`.
 - Arrays: owned `[i64]`, shared borrow `&[i64]`, exclusive borrow `&mut [i64]`.
   Create with `array(len, fill)`. Read `xs[i]`, write `xs[i] = v;`, length `len(xs)`.
   Pass to functions as `&xs` or `&mut xs` (always written at the call site).

@@ -29,6 +29,21 @@ fn uses_count() -> bool {
     USES_COUNT.load(Ordering::Relaxed)
 }
 
+/// Whether the program uses bitwise operators; their bit-vector
+/// definitions are only sent to the solver when needed.
+static USES_BITS: AtomicBool = AtomicBool::new(false);
+
+/// Bitwise operators on integers, through 64-bit vectors. `k.bv` wraps an
+/// integer to 64 bits and `k.s64` reads a vector back as two's complement,
+/// so on i64 values these are exactly C's operators. `k.pow2` is 2^b for
+/// 0 <= b < 64 (and 0 otherwise; code proves the range).
+const BITS_DECLS: &str = "(define-fun k.s64 ((x (_ BitVec 64))) Int
+  (let ((n (bv2nat x))) (ite (>= n 9223372036854775808) (- n 18446744073709551616) n)))
+(define-fun k.bv ((a Int)) (_ BitVec 64) ((_ int2bv 64) a))
+(define-fun k.pow2 ((b Int)) Int
+  (ite (and (<= 0 b) (< b 64)) (bv2nat (bvshl #x0000000000000001 (k.bv b))) 0))
+";
+
 /// The built-in multiset theory behind `count(&xs, lo, hi, v)`: the number
 /// of indices i in [lo, hi) with xs[i] == v. Its definition unfolds through
 /// a fuel argument (two steps per use), which keeps the solver out of
@@ -151,6 +166,10 @@ struct Gen<'a> {
     wf: bool,
     /// Variables on entry, for `old(..)`. At a call site, the callee's pre-state.
     entry: HashMap<String, V>,
+    /// Quantifiers enclosing the expression being translated. Under one, a
+    /// term may mention a bound variable, so it cannot be named by a
+    /// top-level constant.
+    quant: usize,
 }
 
 impl<'a> Gen<'a> {
@@ -185,6 +204,16 @@ impl<'a> Gen<'a> {
             self.ranges(&name, ty, &mut rs);
             st.pc.extend(rs);
         }
+        name
+    }
+
+    /// A 64-bit vector naming the bits of integer term `t`.
+    fn bits(&mut self, st: &mut St, t: &str) -> String {
+        self.n += 1;
+        let name = format!("b.{}", self.n);
+        self.decls.push(format!("(declare-const {} (_ BitVec 64))", name));
+        st.pc.push(format!("(= {} (k.bv {}))", name, t));
+        st.pc.push(format!("(=> {} (= {} (k.s64 {})))", in_range(t), t, name));
         name
     }
 
@@ -264,6 +293,18 @@ impl<'a> Gen<'a> {
                 t
             }
             ExprK::Unary(UOp::Not, a) => format!("(not {})", self.ex(st, a, spec)),
+            // ~a == -a - 1 in two's complement; it cannot overflow.
+            ExprK::Unary(UOp::BitNot, a) => {
+                let av = self.ex(st, a, spec);
+                let t = format!("(- (- 1) {})", av);
+                // The solver cannot derive this bridge between the integer
+                // and its bits on its own; it holds for every integer.
+                if self.quant == 0 {
+                    let x = self.bits(st, &av);
+                    st.pc.push(format!("(= (k.bv {}) (bvnot {}))", t, x));
+                }
+                t
+            }
             ExprK::Unary(UOp::Neg, a) => {
                 let t = format!("(- {})", self.ex(st, a, spec));
                 if !spec {
@@ -304,6 +345,58 @@ impl<'a> Gen<'a> {
                             format!("(cmod {} {})", av, bv)
                         }
                     }
+                    BOp::BitAnd | BOp::BitOr | BOp::BitXor => {
+                        let f = match op {
+                            BOp::BitAnd => "bvand",
+                            BOp::BitOr => "bvor",
+                            _ => "bvxor",
+                        };
+                        // A low mask is a remainder: in two's complement,
+                        // x & (2^k - 1) == x mod 2^k (non-negative) for every
+                        // integer x. Arithmetic keeps such proofs linear.
+                        let low_mask = |e: &Expr| match e.k {
+                            ExprK::Int(m) if m > 0 && m < I64_MAX && (m + 1) & m == 0 => Some(m + 1),
+                            _ => None,
+                        };
+                        if let (BOp::BitAnd, Some(m)) = (op, low_mask(b).or(low_mask(a))) {
+                            let x = if low_mask(b).is_some() { &av } else { &bv };
+                            format!("(mod {} {})", x, lit(m))
+                        } else if self.quant > 0 {
+                            format!("(k.s64 ({} (k.bv {}) (k.bv {})))", f, av, bv)
+                        } else {
+                            // Name each operand's bits and state that an
+                            // in-range operand equals its two's-complement
+                            // reading: both facts are true, and the second lets
+                            // the solver reason on vectors, not through
+                            // int2bv's modulus. Under a quantifier a term may
+                            // mention the bound variable, so it stays inline.
+                            let x = self.bits(st, &av);
+                            let y = self.bits(st, &bv);
+                            format!("(k.s64 ({} {} {}))", f, x, y)
+                        }
+                    }
+                    BOp::Shl | BOp::Shr => {
+                        if !spec {
+                            self.obl(st, "V-SHIFT", b.span, format!("(and (<= 0 {}) (< {} 64))", bv, bv), format!("shift amount of '{}' may be negative or 64 or more", op.sym()), "prove 0 <= amount < 64");
+                            st.pc.push(format!("(and (<= 0 {}) (< {} 64))", bv, bv));
+                        }
+                        // A literal amount stays linear: a * 8, not a * 2^b.
+                        let p = match &b.k {
+                            ExprK::Int(n) if (0..64).contains(n) => lit(1i128 << n),
+                            _ => format!("(k.pow2 {})", bv),
+                        };
+                        if *op == BOp::Shl {
+                            let t = format!("(* {} {})", av, p);
+                            if !spec {
+                                self.obl(st, "V-OVERFLOW", e.span, in_range(&t), "'<<' may overflow i64".into(), "bound the operand so the shifted value fits in i64");
+                            }
+                            t
+                        } else {
+                            // Arithmetic shift: floor division (SMT div rounds
+                            // down for a positive divisor).
+                            format!("(div {} {})", av, p)
+                        }
+                    }
                     BOp::Eq => arith("="),
                     BOp::Ne => format!("(not {})", arith("=")),
                     BOp::Lt => arith("<"),
@@ -339,7 +432,9 @@ impl<'a> Gen<'a> {
                     Some((lv, hv)) => format!("(and (<= {} {}) (< {} {}))", lv, q, q, hv),
                     None => in_range(&q),
                 };
+                self.quant += 1;
                 let bv = self.ex_under(st, &range, body, true);
+                self.quant -= 1;
                 st.vars.remove(var);
                 if *forall {
                     format!("(forall (({} Int)) (=> {} {}))", q, range, bv)
@@ -1006,6 +1101,9 @@ fn spec_deps(map: &HashMap<String, &Func>, lifted: &[Func], f: &Func) -> std::co
 /// are limited to those spec fns (every spec fn is still declared).
 fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func], axioms: bool, only: Option<&std::collections::HashSet<String>>) -> String {
     let mut s = String::from(PRELUDE);
+    if USES_BITS.load(Ordering::Relaxed) {
+        s += BITS_DECLS;
+    }
     if uses_count() {
         s += COUNT_DECLS;
         // Without axioms (spec fn checking, and the retry pass), count is an
@@ -1055,7 +1153,8 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func],
     // definition can never vouch for its own well-formedness.
     let specs: Vec<&Func> = if axioms { specs.into_iter().filter(|f| only.map_or(true, |o| o.contains(&f.name))).collect() } else { vec![] };
     for f in &specs {
-        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new() };
+        // An axiom body sits under the axiom's own quantifier.
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new(), quant: 1 };
         let mut st = St::default();
         let mut binders = vec![];
         let mut flat = vec![];
@@ -1088,7 +1187,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func],
 }
 
 fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func) -> (Vec<String>, Vec<Obl>) {
-    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new() };
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new(), quant: 0 };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {
@@ -1379,7 +1478,9 @@ fn run_z3_budget(script: &str, proof: u64, reach: u64) -> Result<String, String>
 
 pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String> {
     let funcs = &prog.funcs;
-    USES_COUNT.store(format!("{:?}", funcs).contains("Call(\"count\""), Ordering::Relaxed);
+    let dbg = format!("{:?}", funcs);
+    USES_COUNT.store(dbg.contains("Call(\"count\""), Ordering::Relaxed);
+    USES_BITS.store(["BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr"].iter().any(|k| dbg.contains(k)), Ordering::Relaxed);
     let map: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
     // Pure, loop-free fns as definitions, for specifications that call them.
     let lifted: Vec<Func> = funcs.iter().filter(|f| f.kind == FnKind::Code && crate::lift::why_not(&map, &f.name).is_none()).map(crate::lift::as_spec).collect();

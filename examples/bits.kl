@@ -1,0 +1,53 @@
+// Bitwise operators: masks, shifts and packed 4-bit codes.
+
+// Issue #1's first example.
+fn low_byte(w: i64) -> i64
+  requires 0 <= w && w < 4294967296
+  ensures 0 <= result && result < 256
+{
+  return w & 255;
+}
+
+// The k-th 4-bit code of a 32-bit word (k = 0 is the lowest nibble).
+fn nibble(w: i64, k: i64) -> i64
+  requires 0 <= w && w < 0x1_0000_0000
+  requires 0 <= k && k < 8
+  ensures 0 <= result && result < 16
+{
+  return (w >> (4 * k)) & 0xF;
+}
+
+// Pack two codes into a byte, and the decode gives them back.
+fn pack(lo: i64, hi: i64) -> i64
+  requires 0 <= lo && lo < 16 && 0 <= hi && hi < 16
+  ensures 0 <= result && result < 256
+  ensures (result & 0xF) == lo
+  ensures (result >> 4) == hi
+{
+  return (hi << 4) | lo;
+}
+
+// The mask from the kernel: (w << 3) & 0x81C081C0 stays a 32-bit value.
+fn spread(w: i64) -> i64
+  requires 0 <= w && w < 0x1_0000_0000
+  ensures 0 <= result && result < 0x1_0000_0000
+{
+  return (w << 3) & 0x81C081C0;
+}
+
+fn flip(x: i64) -> i64
+  ensures result == -x - 1
+  ensures (x ^ result) == -1
+{
+  return ~x;
+}
+
+io fn main() {
+  print(low_byte(0x1234_5678));
+  print(nibble(0x1234_5678, 2));
+  print(pack(0xA, 0x5));
+  print(spread(0xFFFF_FFFF));
+  print(flip(41));
+  print(-17 >> 2);
+  print(0b1010 ^ 0b0110);
+}
