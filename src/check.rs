@@ -37,6 +37,7 @@ enum Ctx {
 struct Checker<'a> {
     prog: &'a Program,
     sigs: &'a HashMap<String, Sig>,
+    funcs: &'a HashMap<String, &'a Func>,
     f: &'a Func,
     /// True inside a lemma body (ghost code).
     ghost: bool,
@@ -53,7 +54,13 @@ struct Checker<'a> {
     old_ok: bool,
 }
 
-const BUILTINS: &[&str] = &["len", "array", "print", "count"];
+const BUILTINS: &[&str] = &["len", "array", "print", "count", "wrap_i8", "wrap_i16", "wrap_i32", "wrap_i64", "wrap_u8", "wrap_u16", "wrap_u32"];
+
+/// The integer type a `wrap_<type>` builtin reduces into.
+pub fn wrap_kind(name: &str) -> Option<IntK> {
+    let t = name.strip_prefix("wrap_")?;
+    IntK::ALL.iter().copied().find(|k| k.name() == t)
+}
 
 impl<'a> Checker<'a> {
     fn err(&mut self, d: Diag) {
@@ -84,7 +91,9 @@ impl<'a> Checker<'a> {
     }
 
     fn want(&mut self, got: Ty, want: Ty, span: Span, what: &str) {
-        if got != want {
+        // Integer types mix freely: arithmetic is done in i64, and storing
+        // into a narrower type is a proof obligation (it must fit).
+        if got != want && !(got.is_int() && want.is_int()) {
             self.err(Diag::new("E-TYPE", span, format!("{} must be {}, found {}", what, want.name(), got.name())));
         }
     }
@@ -106,7 +115,7 @@ impl<'a> Checker<'a> {
     /// and `return` values, the two places array values may appear.
     fn expr(&mut self, e: &Expr, ctx: Ctx, arr_ok: bool) -> Ty {
         let t = self.expr_inner(e, ctx, arr_ok);
-        if t == Ty::Arr && !arr_ok && !matches!(e.k, ExprK::Var(_)) {
+        if t.is_owned_array() && !arr_ok && !matches!(e.k, ExprK::Var(_)) {
             self.err(Diag::new("E-ARRAY", e.span, "array values may only be a 'let' initializer or a 'return' value"));
         }
         t
@@ -128,7 +137,7 @@ impl<'a> Checker<'a> {
             }
             ExprK::Var(n) => match self.lookup(n) {
                 Some(l) => {
-                    if l.ty.is_array() && !(arr_ok && l.ty == Ty::Arr) {
+                    if l.ty.is_array() && !(arr_ok && l.ty.is_owned_array()) {
                         self.err(Diag::new("E-BORROW", e.span, format!("array '{}' must be used as &{} or &mut {}, indexed, or measured with len()", n, n, n)));
                     }
                     l.ty
@@ -139,10 +148,10 @@ impl<'a> Checker<'a> {
                 }
             },
             ExprK::Index(n, idx) => {
-                self.array_var(n, e.span);
+                let elem = self.array_var(n, e.span).and_then(|l| l.ty.elem()).unwrap_or(IntK::I64);
                 let it = self.expr(idx, ctx, false);
                 self.want(it, Ty::I64, idx.span, "array index");
-                Ty::I64
+                Ty::Int(elem)
             }
             ExprK::Borrow { .. } => {
                 self.err(Diag::new("E-BORROW", e.span, "borrows (&xs, &mut xs) may only appear as call arguments"));
@@ -151,8 +160,8 @@ impl<'a> Checker<'a> {
             ExprK::Unary(op, a) => {
                 let t = self.expr(a, ctx, false);
                 match op {
-                    UOp::Neg => {
-                        self.want(t, Ty::I64, a.span, "operand of '-'");
+                    UOp::Neg | UOp::BitNot => {
+                        self.want(t, Ty::I64, a.span, if *op == UOp::Neg { "operand of '-'" } else { "operand of '~'" });
                         Ty::I64
                     }
                     UOp::Not => {
@@ -165,7 +174,7 @@ impl<'a> Checker<'a> {
                 let ta = self.expr(a, ctx, false);
                 let tb = self.expr(b, ctx, false);
                 match op {
-                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div | BOp::Mod => {
+                    BOp::Add | BOp::Sub | BOp::Mul | BOp::Div | BOp::Mod | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::Shl | BOp::Shr => {
                         self.want(ta, Ty::I64, a.span, "arithmetic operand");
                         self.want(tb, Ty::I64, b.span, "arithmetic operand");
                         Ty::I64
@@ -176,8 +185,8 @@ impl<'a> Checker<'a> {
                         Ty::Bool
                     }
                     BOp::Eq | BOp::Ne => {
-                        if ta != tb || !(ta == Ty::I64 || ta == Ty::Bool) {
-                            self.err(Diag::new("E-TYPE", e.span, format!("cannot compare {} with {} (only i64 and bool support ==; compare fields or use 'is')", ta.name(), tb.name())));
+                        if !((ta.is_int() && tb.is_int()) || (ta == Ty::Bool && tb == Ty::Bool)) {
+                            self.err(Diag::new("E-TYPE", e.span, format!("cannot compare {} with {} (only integers and bool support ==; compare fields or use 'is')", ta.name(), tb.name())));
                         }
                         Ty::Bool
                     }
@@ -306,6 +315,18 @@ impl<'a> Checker<'a> {
             }
             return Ty::I64;
         }
+        if let Some(k) = wrap_kind(name) {
+            // wrap_u32(e): e reduced modulo 2^32 into u32's range. Its + - *
+            // are unchecked (modular arithmetic is the point); anything else
+            // inside is checked as usual.
+            if args.len() != 1 {
+                self.err(Diag::new("E-TYPE", span, format!("{} takes exactly one integer", name)));
+                return Ty::Int(k);
+            }
+            let t = self.expr(&args[0], ctx, false);
+            self.want(t, Ty::I64, args[0].span, &format!("{} argument", name));
+            return Ty::Int(k);
+        }
         if name == "len" {
             if args.len() != 1 {
                 self.err(Diag::new("E-TYPE", span, "len takes exactly one array"));
@@ -315,14 +336,22 @@ impl<'a> Checker<'a> {
                 ExprK::Var(n) => {
                     self.array_var(n, args[0].span);
                 }
-                ExprK::Result if ctx == Ctx::Ensures && self.f.ret == Ty::Arr => {}
+                ExprK::Result if ctx == Ctx::Ensures && self.f.ret.is_owned_array() => {}
                 _ => self.err(Diag::new("E-TYPE", args[0].span, "len takes an array name, e.g. len(xs)")),
             }
             return Ty::I64;
         }
         let callee_kind = self.sigs.get(name).map(|s| s.kind);
-        if ctx != Ctx::Code && callee_kind != Some(FnKind::Spec) {
-            self.err(Diag::new("E-SPEC", span, format!("specifications may only call 'spec fn' functions and len, not '{}'", name)));
+        // A pure, loop-free fn is lifted to a definition (see lift.rs).
+        let lifted = ctx != Ctx::Code && callee_kind == Some(FnKind::Code) && crate::lift::why_not(self.funcs, name).is_none();
+        if ctx != Ctx::Code && callee_kind != Some(FnKind::Spec) && !lifted {
+            let mut d = Diag::new("E-SPEC", span, format!("specifications may only call spec fns, len, count, and fns that are pure and loop-free, not '{}'", name));
+            if callee_kind == Some(FnKind::Code) {
+                if let Some(why) = crate::lift::why_not(self.funcs, name) {
+                    d = d.hint(format!("{}; write a 'spec fn' for it, and prove they agree with ensures result == spec(..)", why));
+                }
+            }
+            self.err(d);
             return Ty::I64;
         }
         if ctx == Ctx::Code && callee_kind == Some(FnKind::Spec) {
@@ -360,7 +389,7 @@ impl<'a> Checker<'a> {
         if sig.kind == FnKind::Lemma {
             self.err(Diag::new("E-SPEC", span, format!("lemma '{}' can only be invoked as a statement", name)));
         }
-        if self.ghost && sig.kind == FnKind::Code {
+        if self.ghost && sig.kind == FnKind::Code && !lifted {
             self.err(Diag::new("E-SPEC", span, format!("lemmas may not call executable function '{}'", name)));
         }
         if sig.io && !self.f.io {
@@ -380,14 +409,19 @@ impl<'a> Checker<'a> {
         for (a, pt) in args.iter().zip(params) {
             if pt.is_array() {
                 let ExprK::Borrow { name: an, mutable, range } = &a.k else {
-                    self.err(Diag::new("E-BORROW", a.span, format!("expected {} here, write '{}name'", pt.name(), if pt == Ty::RefMut { "&mut " } else { "&" })));
+                    self.err(Diag::new("E-BORROW", a.span, format!("expected {} here, write '{}name'", pt.name(), if matches!(pt, Ty::RefMutOf(_)) { "&mut " } else { "&" })));
                     continue;
                 };
                 let Some(l) = self.array_var(an, a.span) else { continue };
-                if *mutable != (pt == Ty::RefMut) {
+                if *mutable != matches!(pt, Ty::RefMutOf(_)) {
                     self.err(Diag::new("E-BORROW", a.span, format!("parameter expects {}", pt.name())));
                 }
-                if *mutable && !(l.ty == Ty::Arr || l.ty == Ty::RefMut) {
+                // Element types must match exactly: the callee reads the
+                // caller's memory, whose layout depends on the element size.
+                if l.ty.elem() != pt.elem() {
+                    self.err(Diag::new("E-TYPE", a.span, format!("parameter expects {}, but '{}' is {}", pt.name(), an, l.ty.name())));
+                }
+                if *mutable && !matches!(l.ty, Ty::ArrOf(_) | Ty::RefMutOf(_)) {
                     self.err(Diag::new("E-BORROW", a.span, format!("cannot borrow '{}' as &mut: it is {}", an, l.ty.name())));
                 }
                 if let Some((lo, hi)) = range {
@@ -469,19 +503,21 @@ impl<'a> Checker<'a> {
         };
         match &s.k {
             StmtK::Let { name, ty, init, mutable } => {
-                if matches!(ty, Ty::Ref | Ty::RefMut) {
+                if matches!(ty, Ty::RefOf(_) | Ty::RefMutOf(_)) {
                     self.err(Diag::new("E-TYPE", s.span, "locals cannot hold borrows; borrow at the call site instead"));
                 }
-                if *ty == Ty::Arr && *mutable {
+                if ty.is_owned_array() && *mutable {
                     self.err(Diag::new("E-MUT", s.span, "arrays are bound with 'let'; their elements are still writable"));
                 }
-                if *ty == Ty::Arr && self.ghost_forbid(s, "allocating an array") {
+                if ty.is_owned_array() && self.ghost_forbid(s, "allocating an array") {
                     return;
                 }
-                if *ty == Ty::Arr && matches!(init.k, ExprK::Var(_)) {
+                if ty.is_owned_array() && matches!(init.k, ExprK::Var(_)) {
                     self.err(Diag::new("E-ARRAY", init.span, "arrays cannot be moved between locals; borrow instead"));
                 }
-                let t = self.expr(init, cx, *ty == Ty::Arr);
+                let t = self.expr(init, cx, ty.is_owned_array());
+                // array(n, fill) makes an array of whatever element type it is bound to.
+                let t = if ty.is_owned_array() && is_array_call(init) { *ty } else { t };
                 self.want(t, *ty, init.span, &format!("initializer of '{}'", name));
                 self.declare(name, Local { ty: *ty, mutable: *mutable }, s.span);
             }
@@ -511,8 +547,8 @@ impl<'a> Checker<'a> {
                     return;
                 }
                 if let Some(l) = self.array_var(name, s.span) {
-                    if l.ty == Ty::Ref {
-                        self.err(Diag::new("E-MUT", s.span, format!("'{}' is a shared borrow (&[i64]); writing needs &mut [i64]", name)));
+                    if let Ty::RefOf(k) = l.ty {
+                        self.err(Diag::new("E-MUT", s.span, format!("'{}' is a shared borrow (&[{1}]); writing needs &mut [{1}]", name, k.name())));
                     }
                 }
                 let ti = self.expr(idx, cx, false);
@@ -581,7 +617,8 @@ impl<'a> Checker<'a> {
                     self.err(Diag::new("E-TYPE", s.span, "this function returns unit"));
                 }
                 (Some(e), r) => {
-                    let t = self.expr(e, cx, r == Ty::Arr);
+                    let t = self.expr(e, cx, r.is_owned_array());
+                    let t = if r.is_owned_array() && is_array_call(e) { r } else { t };
                     self.want(t, r, e.span, "return value");
                 }
             },
@@ -621,7 +658,7 @@ impl<'a> Checker<'a> {
                         self.err(Diag::new("E-PARSE", b.span, "each 'par' branch must be a single function call"));
                         continue;
                     };
-                    if matches!(b.ty, Ty::Arr | Ty::Ref | Ty::RefMut) {
+                    if b.ty.is_array() {
                         self.err(Diag::new("E-TYPE", b.span, "par branches return unit, a scalar, a struct or an enum"));
                     }
                     if fname == "print" || self.sigs.get(fname).map(|s| s.io).unwrap_or(false) {
@@ -661,6 +698,10 @@ impl Program {
 }
 
 /// Arrays read by indexing anywhere inside `e`.
+fn is_array_call(e: &Expr) -> bool {
+    matches!(&e.k, ExprK::Call(n, _) if n == "array")
+}
+
 fn index_reads(e: &Expr, out: &mut Vec<String>) {
     match &e.k {
         ExprK::Index(n, i) => {
@@ -742,6 +783,7 @@ fn check_types(prog: &Program, diags: &mut Vec<Diag>) {
 pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
     let funcs = &prog.funcs;
     let sigs = sigs(funcs);
+    let fmap: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
     let mut diags = vec![];
     check_types(prog, &mut diags);
     let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
@@ -751,19 +793,19 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
             diags.push(Diag::new("E-NAME", f.span, format!("function '{}' is already defined", f.name)));
         }
         let ghost = f.kind != FnKind::Code;
-        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false };
+        let mut c = Checker { prog, sigs: &sigs, funcs: &fmap, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false };
         for p in &f.params {
-            if p.ty == Ty::Arr {
-                c.err(Diag::new("E-TYPE", p.span, format!("parameter '{}' cannot own an array; take &[i64] or &mut [i64]", p.name)));
+            if let Ty::ArrOf(k) = p.ty {
+                c.err(Diag::new("E-TYPE", p.span, format!("parameter '{}' cannot own an array; take &[{1}] or &mut [{1}]", p.name, k.name())));
             }
-            if ghost && matches!(p.ty, Ty::Arr | Ty::RefMut) {
-                c.err(Diag::new("E-SPEC", p.span, "spec fns and lemmas take arrays only as &[i64]"));
+            if ghost && matches!(p.ty, Ty::ArrOf(_) | Ty::RefMutOf(_)) {
+                c.err(Diag::new("E-SPEC", p.span, "spec fns and lemmas take arrays only as shared borrows (&[T])"));
             }
             c.declare(&p.name, Local { ty: p.ty, mutable: false }, p.span);
         }
         match f.kind {
             FnKind::Lemma if f.ret != Ty::Unit => c.err(Diag::new("E-SPEC", f.span, "lemmas return nothing; state the fact in 'ensures'")),
-            FnKind::Spec if !matches!(f.ret, Ty::I64 | Ty::Bool | Ty::Named(_)) => c.err(Diag::new("E-SPEC", f.span, "spec fns return i64, bool, or a struct/enum")),
+            FnKind::Spec if !matches!(f.ret, Ty::Int(_) | Ty::Bool | Ty::Named(_)) => c.err(Diag::new("E-SPEC", f.span, "spec fns return an integer, bool, or a struct/enum")),
             FnKind::Spec if !f.ensures.is_empty() => c.err(Diag::new("E-SPEC", f.span, "spec fns are definitions; prove facts about them with a lemma instead of 'ensures'")),
             _ => {}
         }

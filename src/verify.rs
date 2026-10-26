@@ -29,6 +29,21 @@ fn uses_count() -> bool {
     USES_COUNT.load(Ordering::Relaxed)
 }
 
+/// Whether the program uses bitwise operators; their bit-vector
+/// definitions are only sent to the solver when needed.
+static USES_BITS: AtomicBool = AtomicBool::new(false);
+
+/// Bitwise operators on integers, through 64-bit vectors. `k.bv` wraps an
+/// integer to 64 bits and `k.s64` reads a vector back as two's complement,
+/// so on i64 values these are exactly C's operators. `k.pow2` is 2^b for
+/// 0 <= b < 64 (and 0 otherwise; code proves the range).
+const BITS_DECLS: &str = "(define-fun k.s64 ((x (_ BitVec 64))) Int
+  (let ((n (bv2nat x))) (ite (>= n 9223372036854775808) (- n 18446744073709551616) n)))
+(define-fun k.bv ((a Int)) (_ BitVec 64) ((_ int2bv 64) a))
+(define-fun k.pow2 ((b Int)) Int
+  (ite (and (<= 0 b) (< b 64)) (bv2nat (bvshl #x0000000000000001 (k.bv b))) 0))
+";
+
 /// The built-in multiset theory behind `count(&xs, lo, hi, v)`: the number
 /// of indices i in [lo, hi) with xs[i] == v. Its definition unfolds through
 /// a fuel argument (two steps per use), which keeps the solver out of
@@ -68,6 +83,12 @@ fn lit(v: i128) -> String {
     } else {
         v.to_string()
     }
+}
+
+/// `t` is a value of integer type `k`.
+fn range_of(t: &str, k: IntK) -> String {
+    let (lo, hi) = k.range();
+    format!("(and (<= {} {}) (<= {} {}))", lit(lo), t, t, lit(hi))
 }
 
 fn in_range(t: &str) -> String {
@@ -151,12 +172,18 @@ struct Gen<'a> {
     wf: bool,
     /// Variables on entry, for `old(..)`. At a call site, the callee's pre-state.
     entry: HashMap<String, V>,
+    /// Quantifiers enclosing the expression being translated. Under one, a
+    /// term may mention a bound variable, so it cannot be named by a
+    /// top-level constant.
+    quant: usize,
+    /// Element type of the array an `array(n, fill)` call is bound to.
+    arr_elem: IntK,
 }
 
 impl<'a> Gen<'a> {
     fn ranges(&self, term: &str, ty: Ty, out: &mut Vec<String>) {
         match ty {
-            Ty::I64 => out.push(in_range(term)),
+            Ty::Int(k) => out.push(range_of(term, k)),
             Ty::Named(id) => match &self.prog.def(id).kind {
                 TypeKind::Struct(fs) => {
                     for f in fs {
@@ -188,6 +215,45 @@ impl<'a> Gen<'a> {
         name
     }
 
+    /// Prove a value stored into a slot of type `ty` fits it. Values are
+    /// computed in i64; only narrower integer types need this. Without it,
+    /// binding the value would assume its range and make the path vacuous.
+    fn fit(&mut self, st: &St, v: &str, ty: Ty, span: Span) {
+        if self.ghost || self.wf {
+            return;
+        }
+        if let Some(k) = ty.narrow() {
+            let (lo, hi) = k.range();
+            let msg = format!("value may not fit in {} ({}..={})", k.name(), lo, hi);
+            self.obl(st, "V-OVERFLOW", span, range_of(v, k), msg, "bound the value with a requires clause, a test or an invariant, or use wrap_<type>(..) for modular arithmetic");
+        }
+    }
+
+    /// The + - * spine of a wrap_<type>(..) argument, unchecked: modular
+    /// arithmetic is exact there (C computes it in uint64_t, and 2^N
+    /// divides 2^64). Every other operator is translated and checked as
+    /// usual.
+    fn ex_ring(&mut self, st: &mut St, e: &Expr, spec: bool) -> String {
+        match &e.k {
+            ExprK::Binary(op @ (BOp::Add | BOp::Sub | BOp::Mul), a, b) => {
+                let (x, y) = (self.ex_ring(st, a, spec), self.ex_ring(st, b, spec));
+                format!("({} {} {})", match op { BOp::Add => "+", BOp::Sub => "-", _ => "*" }, x, y)
+            }
+            ExprK::Unary(UOp::Neg, a) => format!("(- {})", self.ex_ring(st, a, spec)),
+            _ => self.ex(st, e, spec),
+        }
+    }
+
+    /// A 64-bit vector naming the bits of integer term `t`.
+    fn bits(&mut self, st: &mut St, t: &str) -> String {
+        self.n += 1;
+        let name = format!("b.{}", self.n);
+        self.decls.push(format!("(declare-const {} (_ BitVec 64))", name));
+        st.pc.push(format!("(= {} (k.bv {}))", name, t));
+        st.pc.push(format!("(=> {} (= {} (k.s64 {})))", in_range(t), t, name));
+        name
+    }
+
     fn fresh_len(&mut self, base: &str, st: &mut St) -> String {
         self.n += 1;
         let name = format!("len.{}.{}", base, self.n);
@@ -203,7 +269,7 @@ impl<'a> Gen<'a> {
         let mut cex: Vec<(String, String)> = vec![];
         for (k, v) in &st.vars {
             match v.ty {
-                Ty::I64 | Ty::Bool | Ty::Named(_) => cex.push((k.clone(), v.smt.clone())),
+                Ty::Int(_) | Ty::Bool | Ty::Named(_) => cex.push((k.clone(), v.smt.clone())),
                 Ty::Payload(..) | Ty::Unit => {}
                 _ => {
                     if let Some(l) = &v.len {
@@ -259,11 +325,23 @@ impl<'a> Gen<'a> {
                 }
                 let t = format!("(select {} {})", a.smt, iv);
                 if !spec {
-                    st.pc.push(in_range(&t));
+                    st.pc.push(range_of(&t, a.ty.elem().unwrap()));
                 }
                 t
             }
             ExprK::Unary(UOp::Not, a) => format!("(not {})", self.ex(st, a, spec)),
+            // ~a == -a - 1 in two's complement; it cannot overflow.
+            ExprK::Unary(UOp::BitNot, a) => {
+                let av = self.ex(st, a, spec);
+                let t = format!("(- (- 1) {})", av);
+                // The solver cannot derive this bridge between the integer
+                // and its bits on its own; it holds for every integer.
+                if self.quant == 0 {
+                    let x = self.bits(st, &av);
+                    st.pc.push(format!("(= (k.bv {}) (bvnot {}))", t, x));
+                }
+                t
+            }
             ExprK::Unary(UOp::Neg, a) => {
                 let t = format!("(- {})", self.ex(st, a, spec));
                 if !spec {
@@ -304,6 +382,80 @@ impl<'a> Gen<'a> {
                             format!("(cmod {} {})", av, bv)
                         }
                     }
+                    BOp::BitAnd | BOp::BitOr | BOp::BitXor => {
+                        let f = match op {
+                            BOp::BitAnd => "bvand",
+                            BOp::BitOr => "bvor",
+                            _ => "bvxor",
+                        };
+                        // A low mask is a remainder: in two's complement,
+                        // x & (2^k - 1) == x mod 2^k (non-negative) for every
+                        // integer x. Arithmetic keeps such proofs linear.
+                        let low_mask = |e: &Expr| match e.k {
+                            ExprK::Int(m) if m > 0 && m < I64_MAX && (m + 1) & m == 0 => Some(m + 1),
+                            _ => None,
+                        };
+                        // Packing: when one side is h * 2^k (h << k) and the
+                        // other is in [0, 2^k), their bits do not overlap, so
+                        // | and ^ are exactly addition. Guarded, so exact.
+                        let shifted = |e: &Expr| match &e.k {
+                            ExprK::Binary(BOp::Shl, _, k) => match k.k {
+                                ExprK::Int(k) if (0..63).contains(&k) => Some(1i128 << k),
+                                _ => None,
+                            },
+                            ExprK::Binary(BOp::Mul, x, y) => [x, y].iter().find_map(|z| match z.k {
+                                ExprK::Int(m) if m > 0 && m & (m - 1) == 0 => Some(m),
+                                _ => None,
+                            }),
+                            _ => None,
+                        };
+                        let pack = match op {
+                            BOp::BitOr | BOp::BitXor => shifted(a).map(|m| (m, &bv)).or_else(|| shifted(b).map(|m| (m, &av))),
+                            _ => None,
+                        };
+                        let general = if let (BOp::BitAnd, Some(m)) = (op, low_mask(b).or(low_mask(a))) {
+                            let x = if low_mask(b).is_some() { &av } else { &bv };
+                            format!("(mod {} {})", x, lit(m))
+                        } else if self.quant > 0 {
+                            format!("(k.s64 ({} (k.bv {}) (k.bv {})))", f, av, bv)
+                        } else {
+                            // Name each operand's bits and state that an
+                            // in-range operand equals its two's-complement
+                            // reading: both facts are true, and the second lets
+                            // the solver reason on vectors, not through
+                            // int2bv's modulus. Under a quantifier a term may
+                            // mention the bound variable, so it stays inline.
+                            let x = self.bits(st, &av);
+                            let y = self.bits(st, &bv);
+                            format!("(k.s64 ({} {} {}))", f, x, y)
+                        };
+                        match pack {
+                            Some((m, lo)) => format!("(ite (and (<= 0 {lo}) (< {lo} {m})) (+ {} {}) {general})", av, bv, lo = lo, m = lit(m), general = general),
+                            None => general,
+                        }
+                    }
+                    BOp::Shl | BOp::Shr => {
+                        if !spec {
+                            self.obl(st, "V-SHIFT", b.span, format!("(and (<= 0 {}) (< {} 64))", bv, bv), format!("shift amount of '{}' may be negative or 64 or more", op.sym()), "prove 0 <= amount < 64");
+                            st.pc.push(format!("(and (<= 0 {}) (< {} 64))", bv, bv));
+                        }
+                        // A literal amount stays linear: a * 8, not a * 2^b.
+                        let p = match &b.k {
+                            ExprK::Int(n) if (0..64).contains(n) => lit(1i128 << n),
+                            _ => format!("(k.pow2 {})", bv),
+                        };
+                        if *op == BOp::Shl {
+                            let t = format!("(* {} {})", av, p);
+                            if !spec {
+                                self.obl(st, "V-OVERFLOW", e.span, in_range(&t), "'<<' may overflow i64".into(), "bound the operand so the shifted value fits in i64");
+                            }
+                            t
+                        } else {
+                            // Arithmetic shift: floor division (SMT div rounds
+                            // down for a positive divisor).
+                            format!("(div {} {})", av, p)
+                        }
+                    }
                     BOp::Eq => arith("="),
                     BOp::Ne => format!("(not {})", arith("=")),
                     BOp::Lt => arith("<"),
@@ -339,7 +491,9 @@ impl<'a> Gen<'a> {
                     Some((lv, hv)) => format!("(and (<= {} {}) (< {} {}))", lv, q, q, hv),
                     None => in_range(&q),
                 };
+                self.quant += 1;
                 let bv = self.ex_under(st, &range, body, true);
+                self.quant -= 1;
                 st.vars.remove(var);
                 if *forall {
                     format!("(forall (({} Int)) (=> {} {}))", q, range, bv)
@@ -354,7 +508,18 @@ impl<'a> Gen<'a> {
                 format!("(ite {} {} {})", cv, av, bv)
             }
             ExprK::Lit { ty, variant, fields } => {
-                let args: Vec<String> = fields.iter().map(|(_, fe)| self.ex(st, fe, spec)).collect();
+                let decl: Vec<Ty> = match variant {
+                    None => self.prog.struct_fields(*ty).unwrap().iter().map(|f| f.ty).collect(),
+                    Some(v) => self.prog.variants(*ty).unwrap().iter().find(|x| x.name == *v).unwrap().fields.iter().map(|f| f.ty).collect(),
+                };
+                let mut args: Vec<String> = vec![];
+                for ((_, fe), fty) in fields.iter().zip(decl) {
+                    let v = self.ex(st, fe, spec);
+                    if !spec {
+                        self.fit(st, &v, fty, fe.span);
+                    }
+                    args.push(v);
+                }
                 let ctor = match variant {
                     None => type_name(*ty),
                     Some(v) => format!("{}.{}", type_name(*ty), v),
@@ -407,13 +572,20 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn ex_arr(&mut self, st: &mut St, e: &Expr) -> V {
+    /// An array value bound to type `ty` (an `array(..)` call takes its
+    /// element type from there).
+    fn ex_arr(&mut self, st: &mut St, e: &Expr, ty: Ty) -> V {
         match &e.k {
             ExprK::Var(n) => st.vars[n].clone(),
-            ExprK::Call(name, args) => match self.call(st, name, args, e.span, false) {
-                Out::Arr(v) => v,
-                _ => unreachable!("checked"),
-            },
+            ExprK::Call(name, args) => {
+                self.arr_elem = ty.elem().unwrap();
+                let out = self.call(st, name, args, e.span, false);
+                self.arr_elem = IntK::I64;
+                match out {
+                    Out::Arr(v) => V { ty, ..v },
+                    _ => unreachable!("checked"),
+                }
+            }
             _ => unreachable!("checked"),
         }
     }
@@ -443,6 +615,8 @@ impl<'a> Gen<'a> {
             "array" => {
                 let nv = self.ex(st, &args[0], spec);
                 let fill = self.ex(st, &args[1], spec);
+                let elem = std::mem::replace(&mut self.arr_elem, IntK::I64);
+                self.fit(st, &fill, Ty::Int(elem), args[1].span);
                 self.obl(st, "V-ALLOC", span, format!("(and (<= 0 {}) (<= {} {}))", nv, nv, MAX_LEN), "array length may be negative or larger than 2^40".into(), "bound the length with a requires clause");
                 let a = self.fresh("arr", Ty::Arr, st);
                 let len = self.fresh_len("arr", st);
@@ -451,6 +625,16 @@ impl<'a> Gen<'a> {
                 return Out::Arr(V { ty: Ty::Arr, smt: a, len: Some(len) });
             }
             _ => {}
+        }
+        if let Some(k) = crate::check::wrap_kind(name) {
+            let t = self.ex_ring(st, &args[0], spec);
+            let m = lit(1i128 << k.bits());
+            return Out::Scalar(if k.signed() {
+                let h = lit(1i128 << (k.bits() - 1));
+                format!("(- (mod (+ {} {}) {}) {})", t, h, m, h)
+            } else {
+                format!("(mod {} {})", t, m)
+            });
         }
         let g = self.funcs[name];
         // Lemma and spec fn arguments are specifications: no runtime obligations.
@@ -495,11 +679,14 @@ impl<'a> Gen<'a> {
                 flat.push(view.clone());
                 flat.push(vlen.clone());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: view, len: Some(vlen) });
-                if p.ty == Ty::RefMut {
+                if matches!(p.ty, Ty::RefMutOf(_)) {
                     mut_args.push((an.clone(), p.name.clone(), r));
                 }
             } else {
                 let s = self.ex(st, a, arg_spec);
+                if !arg_spec {
+                    self.fit(st, &s, p.ty, a.span);
+                }
                 flat.push(s.clone());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: s, len: None });
             }
@@ -510,7 +697,9 @@ impl<'a> Gen<'a> {
         }
         // The callee's pre-state, for `old(..)` in its ensures.
         let pre_call = cs.vars.clone();
-        let check_pre = g.kind != FnKind::Spec || self.wf;
+        // A fn called from a specification stands for its lifted definition.
+        let as_spec = g.kind == FnKind::Spec || (spec && g.kind == FnKind::Code);
+        let check_pre = !as_spec || self.wf;
         if check_pre {
             for r in &g.requires {
                 let goal = self.ex(&mut cs, r, true);
@@ -529,7 +718,7 @@ impl<'a> Gen<'a> {
                 );
             }
         }
-        if g.kind == FnKind::Spec {
+        if as_spec {
             return Out::Scalar(app(&format!("sf.{}", name), &flat));
         }
         for (an, pn, r) in mut_args {
@@ -557,16 +746,22 @@ impl<'a> Gen<'a> {
         }
         let out = match g.ret {
             Ty::Unit => Out::Unit,
-            Ty::Arr => {
+            Ty::ArrOf(_) => {
                 let a = self.fresh("ret", Ty::Arr, st);
                 let len = self.fresh_len("ret", st);
-                let v = V { ty: Ty::Arr, smt: a, len: Some(len) };
+                let v = V { ty: g.ret, smt: a, len: Some(len) };
                 cs.vars.insert("result".into(), v.clone());
                 Out::Arr(v)
             }
             t => {
                 let r = self.fresh(&format!("{}.ret", name), t, st);
                 cs.vars.insert("result".into(), V { ty: t, smt: r.clone(), len: None });
+                // A liftable fn computes exactly its lifted definition, and
+                // its requires were just checked, so the caller learns the
+                // value itself, not only the ensures.
+                if g.kind == FnKind::Code && crate::lift::why_not(self.funcs, name).is_none() {
+                    st.pc.push(format!("(= {} {})", r, app(&format!("sf.{}", name), &flat)));
+                }
                 Out::Scalar(r)
             }
         };
@@ -656,11 +851,12 @@ impl<'a> Gen<'a> {
     fn stmt(&mut self, st: &mut St, s: &Stmt) {
         match &s.k {
             StmtK::Let { name, ty, init, .. } => {
-                if *ty == Ty::Arr {
-                    let v = self.ex_arr(st, init);
+                if ty.is_owned_array() {
+                    let v = self.ex_arr(st, init, *ty);
                     st.vars.insert(name.clone(), v);
                 } else {
                     let val = self.ex(st, init, false);
+                    self.fit(st, &val, *ty, init.span);
                     let x = self.fresh(name, *ty, st);
                     st.pc.push(format!("(= {} {})", x, val));
                     st.vars.insert(name.clone(), V { ty: *ty, smt: x, len: None });
@@ -669,6 +865,11 @@ impl<'a> Gen<'a> {
             StmtK::Assign { name, path, val } => {
                 let v = self.ex(st, val, false);
                 let cur = st.vars[name].clone();
+                let mut slot = cur.ty;
+                for f in path {
+                    slot = self.prog.fields_of(slot).and_then(|fs| fs.iter().find(|x| x.name == *f)).map(|x| x.ty).unwrap();
+                }
+                self.fit(st, &v, slot, val.span);
                 let newv = self.update(&cur.smt, cur.ty, path, &v);
                 let x = self.fresh(name, cur.ty, st);
                 st.pc.push(format!("(= {} {})", x, newv));
@@ -689,6 +890,7 @@ impl<'a> Gen<'a> {
                 // Read the array only after the value: evaluating it may have
                 // changed the array (C stores into the array as it is then).
                 let a = st.vars[name].clone();
+                self.fit(st, &vv, Ty::Int(a.ty.elem().unwrap()), val.span);
                 let a2 = self.fresh(name, Ty::Arr, st);
                 st.pc.push(format!("(= {} (store {} {} {}))", a2, a.smt, iv, vv));
                 st.vars.get_mut(name).unwrap().smt = a2;
@@ -766,9 +968,10 @@ impl<'a> Gen<'a> {
             StmtK::Return(e) => {
                 let r = match e {
                     None => None,
-                    Some(e) if self.f.ret == Ty::Arr => Some(self.ex_arr(st, e)),
+                    Some(e) if self.f.ret.is_owned_array() => Some(self.ex_arr(st, e, self.f.ret)),
                     Some(e) => {
                         let v = self.ex(st, e, false);
+                        self.fit(st, &v, self.f.ret, e.span);
                         Some(V { ty: self.f.ret, smt: v, len: None })
                     }
                 };
@@ -902,10 +1105,105 @@ const PRELUDE: &str = "(set-option :produce-models true)
 (define-fun cmod ((a Int) (b Int)) Int (- a (* b (cdiv a b))))
 ";
 
+fn calls_expr(e: &Expr, out: &mut Vec<String>) {
+    match &e.k {
+        ExprK::Call(name, args) => {
+            out.push(name.clone());
+            args.iter().for_each(|a| calls_expr(a, out));
+        }
+        ExprK::Index(_, a) | ExprK::Unary(_, a) | ExprK::Old(a) | ExprK::Field(a, _) | ExprK::Is(a, _, _) | ExprK::As(a, _, _) => calls_expr(a, out),
+        ExprK::Binary(_, a, b) => {
+            calls_expr(a, out);
+            calls_expr(b, out);
+        }
+        ExprK::IfE(c, a, b) => {
+            calls_expr(c, out);
+            calls_expr(a, out);
+            calls_expr(b, out);
+        }
+        ExprK::Quant { range, body, .. } => {
+            if let Some((lo, hi)) = range {
+                calls_expr(lo, out);
+                calls_expr(hi, out);
+            }
+            calls_expr(body, out);
+        }
+        ExprK::Borrow { range: Some((lo, hi)), .. } => {
+            calls_expr(lo, out);
+            calls_expr(hi, out);
+        }
+        ExprK::Lit { fields, .. } => fields.iter().for_each(|(_, v)| calls_expr(v, out)),
+        _ => {}
+    }
+}
+
+fn calls_block(b: &Block, out: &mut Vec<String>) {
+    for s in b {
+        match &s.k {
+            StmtK::Let { init: e, .. } | StmtK::Assign { val: e, .. } | StmtK::Assert(e) | StmtK::Expr(e) | StmtK::Return(Some(e)) => calls_expr(e, out),
+            StmtK::Store { idx, val, .. } => {
+                calls_expr(idx, out);
+                calls_expr(val, out);
+            }
+            StmtK::If { cond, then, els } => {
+                calls_expr(cond, out);
+                calls_block(then, out);
+                if let Some(e) = els {
+                    calls_block(e, out);
+                }
+            }
+            StmtK::While { cond, invs, dec, body } => {
+                calls_expr(cond, out);
+                invs.iter().for_each(|i| calls_expr(i, out));
+                calls_expr(dec, out);
+                calls_block(body, out);
+            }
+            StmtK::Par(bs) => bs.iter().for_each(|b| calls_expr(&b.call, out)),
+            StmtK::Match { scrut, arms, .. } => {
+                calls_expr(scrut, out);
+                arms.iter().for_each(|a| calls_block(&a.body, out));
+            }
+            StmtK::Return(None) => {}
+        }
+    }
+}
+
+/// The spec fns whose definitions a proof about `f` can depend on: those
+/// named in `f` itself, in the contracts of anything it calls, and in the
+/// bodies of those spec fns, transitively. Only these axioms go into `f`'s
+/// solver query, so a definition elsewhere in the file cannot change
+/// whether `f` proves. Leaving axioms out only weakens assumptions.
+fn spec_deps(map: &HashMap<String, &Func>, lifted: &[Func], f: &Func) -> std::collections::HashSet<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut specs = std::collections::HashSet::new();
+    let mut work = vec![];
+    f.requires.iter().chain(&f.ensures).chain(&f.decreases).for_each(|e| calls_expr(e, &mut work));
+    calls_block(&f.body, &mut work);
+    while let Some(name) = work.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(g) = map.get(&name) else { continue };
+        g.requires.iter().chain(&g.ensures).chain(&g.decreases).for_each(|e| calls_expr(e, &mut work));
+        if g.kind == FnKind::Spec {
+            specs.insert(name);
+            calls_block(&g.body, &mut work);
+        } else if let Some(l) = lifted.iter().find(|l| l.name == name) {
+            calls_block(&l.body, &mut work);
+            specs.insert(name);
+        }
+    }
+    specs
+}
+
 /// SMT declarations shared by every function: datatypes for structs and
-/// enums, and spec fns with their definitional axioms.
-fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) -> String {
+/// enums, and spec fns with their definitional axioms. With `only`, axioms
+/// are limited to those spec fns (every spec fn is still declared).
+fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func], axioms: bool, only: Option<&std::collections::HashSet<String>>) -> String {
     let mut s = String::from(PRELUDE);
+    if USES_BITS.load(Ordering::Relaxed) {
+        s += BITS_DECLS;
+    }
     if uses_count() {
         s += COUNT_DECLS;
         // Without axioms (spec fn checking, and the retry pass), count is an
@@ -940,7 +1238,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
         s += &format!("(declare-datatypes ({}) ({}))\n", heads.join(" "), bodies.join(" "));
     }
     // Declare all spec fns first so axioms may reference each other.
-    let specs: Vec<&Func> = prog.funcs.iter().filter(|f| f.kind == FnKind::Spec).collect();
+    let specs: Vec<&Func> = prog.funcs.iter().filter(|f| f.kind == FnKind::Spec).chain(lifted).collect();
     for f in &specs {
         let mut sorts = vec![];
         for p in &f.params {
@@ -953,9 +1251,10 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
     }
     // Spec fns are checked without any definitional axioms, so a bad
     // definition can never vouch for its own well-formedness.
-    let specs: Vec<&Func> = if axioms { specs } else { vec![] };
+    let specs: Vec<&Func> = if axioms { specs.into_iter().filter(|f| only.map_or(true, |o| o.contains(&f.name))).collect() } else { vec![] };
     for f in &specs {
-        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new() };
+        // An axiom body sits under the axiom's own quantifier.
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new(), quant: 1, arr_elem: IntK::I64 };
         let mut st = St::default();
         let mut binders = vec![];
         let mut flat = vec![];
@@ -988,7 +1287,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
 }
 
 fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func) -> (Vec<String>, Vec<Obl>) {
-    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new() };
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new(), quant: 0, arr_elem: IntK::I64 };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {
@@ -1279,16 +1578,19 @@ fn run_z3_budget(script: &str, proof: u64, reach: u64) -> Result<String, String>
 
 pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String> {
     let funcs = &prog.funcs;
-    USES_COUNT.store(format!("{:?}", funcs).contains("Call(\"count\""), Ordering::Relaxed);
+    let dbg = format!("{:?}", funcs);
+    USES_COUNT.store(dbg.contains("Call(\"count\""), Ordering::Relaxed);
+    USES_BITS.store(["BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr"].iter().any(|k| dbg.contains(k)), Ordering::Relaxed);
     let map: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
+    // Pure, loop-free fns as definitions, for specifications that call them.
+    let lifted: Vec<Func> = funcs.iter().filter(|f| f.kind == FnKind::Code && crate::lift::why_not(&map, &f.name).is_none()).map(crate::lift::as_spec).collect();
     // Phase 1: spec fn definitions (no axioms). Phase 2: everything else,
     // only once every definition is known to be well-founded.
     let (specs, rest): (Vec<&Func>, Vec<&Func>) = funcs.iter().partition(|f| f.kind == FnKind::Spec);
     let mut total = VResult { diags: vec![], proved: 0, inconclusive: 0 };
     for (phase, axioms) in [(specs, false), (rest, true)] {
-        let prelude = shared_prelude(prog, &map, axioms);
-        let bare = shared_prelude(prog, &map, false);
-        let r = run_phase(prog, &map, &phase, &prelude, &bare, dump_dir)?;
+        let bare = shared_prelude(prog, &map, &lifted, false, None);
+        let r = run_phase(prog, &map, &lifted, &phase, axioms, &bare, dump_dir)?;
         total.proved += r.proved;
         total.inconclusive += r.inconclusive;
         total.diags.extend(r.diags);
@@ -1379,9 +1681,16 @@ fn loop_hint(looping: &Option<(Span, String, String)>) -> Option<String> {
     })
 }
 
-fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prelude: &str, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
+fn run_phase(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func], funcs: &[&Func], axioms: bool, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
     let jobs: Vec<(Vec<String>, Vec<Obl>)> = funcs.iter().map(|f| gen_func(prog, map, f)).collect();
-    let scripts: Vec<String> = jobs.iter().map(|(d, o)| build_script(prelude, d, o, &(0..o.len()).collect::<Vec<_>>(), false)).collect();
+    let scripts: Vec<String> = jobs
+        .iter()
+        .zip(funcs)
+        .map(|((d, o), f)| {
+            let prelude = if axioms { shared_prelude(prog, map, lifted, true, Some(&spec_deps(map, lifted, f))) } else { bare.to_string() };
+            build_script(&prelude, d, o, &(0..o.len()).collect::<Vec<_>>(), false)
+        })
+        .collect();
     if let Some(dir) = dump_dir {
         for (f, script) in funcs.iter().zip(&scripts) {
             let _ = std::fs::write(format!("{}/{}.smt2", dir, f.name), script);

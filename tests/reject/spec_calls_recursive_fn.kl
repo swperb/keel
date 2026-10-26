@@ -1,0 +1,13 @@
+// expect: E-SPEC
+fn fact(n: i64) -> i64
+  requires 0 <= n && n <= 10
+  decreases n
+{
+  if n == 0 { return 1; }
+  return n * fact(n - 1);
+}
+lemma l(n: i64)
+  requires 0 <= n && n <= 10
+  ensures fact(n) >= 1
+{
+}

@@ -1,0 +1,66 @@
+// Lifting through lets, vars, nested ifs, array reads, struct values, and
+// calls between liftable fns; used in requires, ensures, invariants,
+// asserts, spec fn bodies and lemmas.
+struct Pt { x: i64, y: i64 }
+
+fn clamp(v: i64, lo: i64, hi: i64) -> i64
+  requires lo <= hi
+{
+  var r: i64 = v;
+  if r < lo { r = lo; }
+  if r > hi { r = hi; }
+  return r;
+}
+
+fn at_or(xs: &[i64], i: i64, d: i64) -> i64 {
+  if 0 <= i && i < len(xs) { return xs[i]; }
+  return d;
+}
+
+fn mid(p: Pt, q: Pt) -> Pt
+  requires 0 <= p.x && p.x <= 1000 && 0 <= q.x && q.x <= 1000
+  requires 0 <= p.y && p.y <= 1000 && 0 <= q.y && q.y <= 1000
+{
+  let mx: i64 = (p.x + q.x) / 2;
+  return Pt { x: mx, y: clamp(p.y, 0, q.y + 0) };
+}
+
+spec fn in_box(v: i64, lo: i64, hi: i64) -> bool
+  requires lo <= hi
+{
+  clamp(v, lo, hi) == v
+}
+
+lemma clamp_idem(v: i64, lo: i64, hi: i64)
+  requires lo <= hi
+  ensures clamp(clamp(v, lo, hi), lo, hi) == clamp(v, lo, hi)
+{
+}
+
+fn sum_clamped(xs: &[i64], lo: i64, hi: i64) -> i64
+  requires 0 <= lo && lo <= hi && hi <= 1000 && len(xs) <= 1000
+  ensures 0 <= result && result <= 1000 * len(xs)
+{
+  var s: i64 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    invariant 0 <= s && s <= hi * i
+    decreases len(xs) - i
+  {
+    let c: i64 = clamp(xs[i], lo, hi);
+    assert in_box(c, lo, hi);
+    assert c == clamp(at_or(&xs, i, 0), lo, hi);
+    s = s + c;
+    i = i + 1;
+  }
+  return s;
+}
+
+fn uses_mid() -> i64
+  ensures result == mid(Pt { x: 2, y: 9 }, Pt { x: 6, y: 4 }).x
+{
+  let m: Pt = mid(Pt { x: 2, y: 9 }, Pt { x: 6, y: 4 });
+  assert m.y == 4;
+  return m.x;
+}

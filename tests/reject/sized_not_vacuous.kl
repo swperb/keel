@@ -1,0 +1,7 @@
+// expect: V-OVERFLOW
+fn f(x: i64) -> u8
+  ensures result == x
+{
+  let y: u8 = x;
+  return y;
+}

@@ -1,0 +1,15 @@
+// Issue #3: a contract calls a pure, loop-free fn directly.
+fn tiles(mode: i64) -> i64
+  requires mode == 1 || mode == 2
+  ensures result >= 1
+{
+  if mode == 1 { return 2; }
+  return 1;
+}
+
+fn slot(mode: i64) -> i64
+  requires mode == 1 || mode == 2
+  ensures result == tiles(mode) * 512
+{
+  return tiles(mode) * 512;
+}

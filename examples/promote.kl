@@ -1,0 +1,18 @@
+// Narrow operands are computed in i64: C must not fall back to int or
+// uint32_t arithmetic, which would wrap these results.
+fn m(a: u32, b: u32) -> i64
+  requires a < 3037000000 && b < 3037000000
+{
+  return a * b;
+}
+fn d(a: u32, b: u32) -> i64 {
+  return a - b;
+}
+fn n(a: u8) -> i64 {
+  return -a;
+}
+io fn main() {
+  print(m(3000000000, 3000000000));
+  print(d(1, 2));
+  print(n(200));
+}

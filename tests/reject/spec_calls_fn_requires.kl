@@ -1,0 +1,11 @@
+// expect: V-REQUIRES
+fn tiles(mode: i64) -> i64
+  requires mode == 1 || mode == 2
+{
+  if mode == 1 { return 2; }
+  return 1;
+}
+spec fn t3() -> i64
+{
+  tiles(3)
+}

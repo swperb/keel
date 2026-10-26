@@ -1,0 +1,6 @@
+fn f(w: i64, s: i64) -> i64
+  requires 0 <= w && w < 256 && 0 <= s && s < 8
+  ensures 0 <= result && result < 65536
+{
+  return w << s;
+}

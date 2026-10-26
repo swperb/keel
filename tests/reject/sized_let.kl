@@ -1,0 +1,5 @@
+// expect: V-OVERFLOW
+fn f() -> i64 {
+  let x: u8 = 256;
+  return x;
+}

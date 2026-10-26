@@ -5,6 +5,47 @@ A systems language built for agents first. If a program compiles, it has been
 contract violations, data races and non-termination. Because every safety
 property is proven up front, the generated code has no runtime checks at all.
 
+![keel check rejects an overflowing midpoint with a concrete counterexample, then proves the fixed version](site/demo.gif)
+
+**Results so far**
+
+- **As fast as Rust, with proofs.** Counting primes below 20M with `par`:
+  0.23 s against 0.20 s for Rust scoped threads. Mergesort of 10M integers:
+  0.12 s, the same as `rayon::join`, with the output proven sorted and a
+  permutation of its input.
+- **Learnable by agents from one page.** Haiku, Sonnet and Opus each wrote
+  verifying Keel from a one-page primer. Given the contract, all three proved
+  all six exact specifications in round 2 (18 of 18). Their Rust solutions
+  passed the same hidden tests while carrying no machine-checked facts
+  ([evals](evals/README.md)).
+- **Deterministic.** Every check gets a fixed budget of solver work, so with
+  the same Z3 version the same file gets the same verdict on every run and
+  machine.
+
+> **Can you break it?** If you get a program past `keel check` that overflows,
+> indexes out of bounds, races or loops forever, that is the most valuable bug
+> report there is. See **[BREAK_IT.md](BREAK_IT.md)** for what counts and
+> where we think the weak spots are.
+
+## Install
+
+```
+cargo install --git https://github.com/swperb/keel
+```
+
+Keel needs [Z3](https://github.com/Z3Prover/z3) on `PATH` and a C compiler
+(`cc`, or set `CC`). Keel is tested with Z3 5.3.2: `brew install z3`, or a
+binary from [Z3's releases](https://github.com/Z3Prover/z3/releases). Older
+distribution packages (Ubuntu 24.04 ships 4.8.12) are too slow for some
+proofs. Then:
+
+```
+keel check file.kl    # prove
+keel run file.kl      # prove, compile, run
+```
+
+A taste (`examples/search.kl`):
+
 ```
 fn search(xs: &[i64], key: i64) -> i64
   requires forall i in 0..len(xs) { forall j in i..len(xs) { xs[i] <= xs[j] } }
@@ -40,7 +81,8 @@ exactly what is wrong. Keel is designed around that.
 ### No precedence, on purpose
 
 `a + b * c` is a compile error (E-PAREN). So is `a && b || c`. You write
-`a + (b * c)`. Chains of one associative operator are fine. This removes an
+`a + (b * c)`. Chains of one associative operator are fine. Bitwise
+operators follow the same rule: `a & b | c` and `a + b << 2` are errors. This removes an
 entire class of misreadings, for models and people alike.
 
 ## Compared to Bend
@@ -108,6 +150,8 @@ Keel's standard library is future work.
 
 ## Usage
 
+From a checkout (`cargo install --git` above puts `keel` on your `PATH` instead):
+
 ```
 cargo build --release
 ./target/release/keel check examples/search.kl       # prove
@@ -173,7 +217,9 @@ example verifies in 0.01 to 1 s.
 
 Verification is deterministic: every check gets a fixed budget of solver
 work (Z3's resource counter), never a wall-clock timeout, so the same file
-gets the same verdict on every run and every machine load. Reachability
+gets the same verdict on every run and every machine load. Budgets are
+counted in one Z3 version's units, so pin the version (CI uses 5.3.2): an
+older or newer solver may settle a borderline proof differently. Reachability
 checks get a small budget, and any the solver cannot settle are reported as
 inconclusive rather than silently passed. When a proof runs out of budget
 in a function with a self-triggering quantifier such as
@@ -182,7 +228,8 @@ the pairwise form, which typically proves in under a second.
 
 ## The language
 
-- Types: `i64`, `bool`, structs, enums with payloads, owned arrays `[i64]`, borrows `&[i64]` and `&mut [i64]`.
+- Types: `i64`, `i32`, `i16`, `i8`, `u32`, `u16`, `u8`, `bool`, structs, enums with payloads, owned arrays `[T]`, borrows `&[T]` and `&mut [T]` for any integer `T` (so `[u8]` is a byte buffer).
+- Integers: arithmetic is done in i64 (proven not to overflow it), and storing a value into a narrower type (a `let`, assignment, array element, field, argument or return value) is proven to fit, so no conversion ever truncates. `wrap_u32(e)` (and `wrap_i8`..`wrap_i64`, `wrap_u8`..) reduces `e` modulo 2^N for code that wants wrapping, such as hashes; its `+ - *` may exceed i64. `u64` is not supported yet.
 - Naming: types and variants start uppercase, values start lowercase (enforced; keeps the grammar unambiguous).
 - Structs: `Point { x: 1, y: 2 }` lists every field in declaration order; `p.x = 3;` updates a `var`.
 - Enums: always qualified, `Shape.Circle { r: 5 }`, `Shape.Empty`. `s is Shape.Circle` tests a variant. In specs, `(s as Shape.Circle).r` reads a payload.
@@ -190,7 +237,9 @@ the pairwise form, which typically proves in under a second.
 - Functions: `fn` is pure; `io fn` may print and call other `io fn`.
 - Contracts: `requires`, `ensures` (with `result`), `decreases` (required for recursion).
 - Ghost code: `spec fn` (single-expression math definitions, spec-only `if c { a } else { b }`), `lemma` (no loops; prove by cases, `assert` and recursion).
+- Specs may also call an ordinary `fn` that is pure, loop-free and non-recursive, takes no `&mut`, and returns `i64`, `bool` or a struct/enum: write a helper like `tiles(mode)` once and use it in both code and contracts. Its body (`let`, `var`, `if`, `return`) is lifted to a definition.
 - Statements: `let`, `var`, assignment, `xs[i] = v`, `if`/`else`, `while ... invariant ... decreases ...`, `return`, `assert`, `par`.
+- Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>` on `i64` (two's complement, as in C), and `0x`/`0b` literals. A shift amount must be proven in `0..64` (`V-SHIFT`), and `a << b` must fit in i64. `>>` is arithmetic (rounds toward negative infinity, unlike `/`). The verifier reads masks `x & (2^k - 1)` as `x mod 2^k` and other operators as 64-bit vector operations.
 - Specs: `forall x in lo..hi { P }`, `forall v: i64 { P }` (every i64), `exists`, `==>`, `len(xs)`.
 - Multisets: `count(&xs, lo, hi, v)` is the number of times `v` occurs in `xs[lo..hi]`; `old(e)` in `ensures`, invariants and asserts is `e` on function entry. Together they state permutations: `ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }`.
 - Slices: `&xs[lo..hi]` and `&mut xs[lo..hi]` borrow a range; the callee sees an array of length `hi - lo`. Two borrows of one array may coexist in a call or across `par` branches only if both are slices and the verifier proves the ranges disjoint.
@@ -203,7 +252,12 @@ the pairwise form, which typically proves in under a second.
 and a path condition. Loops are cut with their invariants: prove on entry,
 havoc what the body modifies, assume the invariant, prove it is preserved and
 that the measure decreases. Calls are modular: prove the callee's `requires`,
-assume its `ensures`. Integer semantics match C exactly (truncating division),
+assume its `ensures` (and, for a pure loop-free `fn`, its lifted definition:
+the verified body never overflows, so its mathematical reading is exact).
+Each function's query holds only the `spec fn` definitions it reaches
+through its own code and contracts and those of its callees, so adding a
+definition elsewhere in a file cannot change whether an existing proof
+passes. Integer semantics match C exactly (truncating division),
 and because overflow is proven impossible, mathematical integers in the solver
 equal machine integers in the binary. Each function's obligations go to its
 own Z3 process, all in parallel. Any obligation the solver gives up on is
@@ -231,9 +285,9 @@ verifier and the C compiler (Lean's is a small proof kernel). If you can get
 a bad program past `keel check`, see [BREAK_IT.md](BREAK_IT.md).
 
 Next, roughly in order:
-1. Sized integers (`u8`..`u64`, `i32`), arrays of any element type, recursive types.
+1. `u64`, arrays of structs, recursive types.
 2. A tuned standard library sort with the same sortedness and permutation guarantees, and faster failure on false multiset claims (today a wrong permutation claim is rejected only after the solver times out, about 13 s).
-3. `old(...)` in ensures, and cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
+3. Cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
 4. `keel fmt` as the single canonical layout, and a proof cache keyed by function hash for fast agent iteration.
 5. Proven stack bounds, arena regions, and an LLVM backend.
 

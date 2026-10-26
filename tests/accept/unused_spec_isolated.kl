@@ -1,0 +1,41 @@
+// Issue #4: an unused quantified spec fn must not affect an unrelated proof.
+spec fn first(ids: &[i64], p: i64) -> bool
+  requires 0 <= p && p < len(ids)
+{
+  forall j in (p - (p % 8))..p { ids[j] != ids[p] }
+}
+
+spec fn prefix(cnt: &[i64], j: i64) -> i64
+  requires 0 <= j && j <= len(cnt)
+  decreases j
+{
+  if j == 0 { 0 } else { prefix(&cnt, j - 1) + cnt[j - 1] }
+}
+
+lemma prefix_step(cnt: &[i64], j: i64)
+  requires 0 <= j && j < len(cnt)
+  ensures prefix(&cnt, j + 1) == prefix(&cnt, j) + cnt[j]
+{
+}
+
+fn groups(cnt: &[i64], lc: i64, p: i64, k: i64) -> i64
+  requires len(cnt) == 32 && 0 <= lc && lc <= 32
+  requires k == 8 || k == 16 || k == 32
+  requires 0 <= p && p <= 16384
+  requires forall j in 0..32 { 0 <= cnt[j] }
+  requires forall j in 0..33 { prefix(&cnt, j) <= p }
+  ensures 0 <= result && result <= lc + (p / k)
+{
+  var ng: i64 = 0;
+  var e: i64 = 0;
+  while e < lc
+    invariant 0 <= e && e <= lc
+    invariant 0 <= ng && ng <= e + (prefix(&cnt, e) / k)
+    decreases lc - e
+  {
+    prefix_step(&cnt, e);
+    ng = ng + ((cnt[e] + (k - 1)) / k);
+    e = e + 1;
+  }
+  return ng;
+}

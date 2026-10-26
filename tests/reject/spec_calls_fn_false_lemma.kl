@@ -1,0 +1,12 @@
+// expect: V-ENSURES
+fn tiles(mode: i64) -> i64
+  requires mode == 1 || mode == 2
+{
+  if mode == 1 { return 2; }
+  return 1;
+}
+lemma bad(m: i64)
+  requires m == 1 || m == 2
+  ensures tiles(m) == 2
+{
+}

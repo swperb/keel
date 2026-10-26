@@ -1,0 +1,17 @@
+fn evens(xs: &[i64]) -> bool
+  requires forall j in 0..len(xs) { (xs[j] & 1) == 0 }
+  ensures result
+{
+  return true;
+}
+
+spec fn low(x: i64) -> i64 { x & 0xFF }
+
+fn lifted_mask(x: i64) -> i64 { return (x >> 8) & 0xFF; }
+
+lemma l(x: i64)
+  requires 0 <= x && x < 65536
+  ensures 0 <= low(x) && low(x) < 256
+  ensures 0 <= lifted_mask(x) && lifted_mask(x) < 256
+{
+}

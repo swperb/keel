@@ -14,7 +14,10 @@ report what you find.
 A soundness bug is a program that `keel check` accepts and that, at run
 time, does one of these:
 
-- overflows `i64` (any `+`, `-`, `*`, `/`, `%` or negation)
+- overflows `i64` (any `+`, `-`, `*`, `/`, `%`, `<<` or negation)
+- stores a value that does not fit a narrower integer type (`u8`, `i32`,
+  ...) into a variable, array element, field, argument or return value
+- shifts by a negative amount or by 64 or more
 - reads or writes an array out of bounds, or slices out of range
 - divides or takes a remainder by zero
 - has a data race between `par` branches

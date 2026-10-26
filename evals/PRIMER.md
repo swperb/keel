@@ -6,7 +6,16 @@ division by zero, every `requires`/`ensures` holds, every loop and recursion
 terminates. If `keel check file.kl` succeeds, those facts are machine-checked.
 
 ## Types and values
-- `i64` (64-bit signed), `bool`. No other integer types, no floats, no strings.
+- Integers `i64`, `i32`, `i16`, `i8`, `u32`, `u16`, `u8`, and `bool`. No floats, no
+  strings, no `u64`. Arithmetic is done in i64; storing into a narrower type
+  (let, assignment, array element, field, argument, return) must be proven to
+  fit. `wrap_u32(e)` etc. reduce modulo 2^N when wrapping is wanted.
+- Arrays of any integer type: `[u8]`, `&[u16]`, `&mut [u32]`; `array(n, fill)`
+  takes its element type from the `let` it is bound to.
+- Bitwise operators `& | ^ ~ << >>` work on `i64` as in C, with `0xFF` and
+  `0b1010` literals. Shift amounts must be proven in `0..64`; `>>` rounds
+  down (`-5 >> 1 == -3`), unlike `/`. Mixing them with other operators needs
+  parentheses: `(w >> 4) & 0xF`.
 - Arrays: owned `[i64]`, shared borrow `&[i64]`, exclusive borrow `&mut [i64]`.
   Create with `array(len, fill)`. Read `xs[i]`, write `xs[i] = v;`, length `len(xs)`.
   Pass to functions as `&xs` or `&mut xs` (always written at the call site).
@@ -63,6 +72,9 @@ write `a + (b * c)`. `a && b || c` is an error. Chains of one operator are fine
 - `(s as Shape.Circle).r` reads a payload in specs; in code use `match`.
 - `spec fn f(..) -> i64 { <expr> }` defines math usable only in specs; its body
   is one expression and may use `if c { a } else { b }`.
+- Specs may also call a plain `fn` that has no loops, no recursion and no
+  `&mut` parameters (for example `ensures result == tiles(mode) * 512`); no
+  duplicate `spec fn` is needed for such helpers.
 - `lemma l(..) requires .. ensures .. { .. }` proves a fact; call it as a
   statement `l(args);` to use the fact. Recursive lemmas are induction.
 

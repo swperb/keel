@@ -1,0 +1,2 @@
+// expect: E-LEX
+fn f() -> i64 { return 0xFFFF_FFFF_FFFF_FFFF; }

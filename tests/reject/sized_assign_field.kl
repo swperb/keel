@@ -1,0 +1,7 @@
+// expect: V-OVERFLOW
+struct P { a: i8 }
+fn f() -> P {
+  var p: P = P { a: 0 };
+  p.a = -129;
+  return p;
+}

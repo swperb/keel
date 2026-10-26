@@ -1,0 +1,13 @@
+// expect: V-ENSURES
+fn tiles(mode: i64) -> i64
+  requires mode == 1 || mode == 2
+{
+  if mode == 1 { return 2; }
+  return 1;
+}
+fn slot(mode: i64) -> i64
+  requires mode == 1 || mode == 2
+  ensures result == tiles(mode) * 511
+{
+  return tiles(mode) * 512;
+}

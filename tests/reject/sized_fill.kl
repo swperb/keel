@@ -1,0 +1,5 @@
+// expect: V-OVERFLOW
+fn f() -> i64 {
+  let b: [u8] = array(4, -1);
+  return b[0];
+}

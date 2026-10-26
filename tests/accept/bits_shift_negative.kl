@@ -1,0 +1,6 @@
+fn f(w: i64) -> i64
+  requires -4294967296 <= w && w < 4294967296
+  ensures result == w * 4
+{
+  return w << 2;
+}
