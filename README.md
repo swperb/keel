@@ -98,7 +98,9 @@ that the compiler enforces:
   OpenMP. The verifier proves no iteration touches a slot another writes
   (`V-RACE`), and a per-iteration `ensures` becomes a `forall` after the
   loop, so no invariant is needed. It matches Rust rayon on the kernels in
-  `bench/parfor` ([docs/par-for.md](docs/par-for.md)).
+  `bench/parfor` ([docs/par-for.md](docs/par-for.md)). With an NVIDIA GPU
+  the same loops run as kernels Keel emits as PTX itself, with no CUDA
+  toolkit needed to build ([docs/gpu.md](docs/gpu.md)).
 - **Automated proofs with counterexamples.** Overflow, bounds, division by
   zero, contracts and termination are discharged by an SMT solver without
   hand-written proof terms; when a proof fails, the error carries concrete

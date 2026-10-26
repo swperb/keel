@@ -1,0 +1,20 @@
+// expect: E-PARFOR
+fn one(x: i64) -> i64 { return x; }
+
+fn both(x: i64) -> i64
+  requires 0 <= x && x <= 100
+{
+  par {
+    let a: i64 = one(x);
+    let b: i64 = one(x);
+  }
+  return a + b;
+}
+
+fn f(out: &mut [i64])
+  requires len(out) <= 100
+{
+  par for i in 0..len(out) {
+    out[i] = both(i);
+  }
+}

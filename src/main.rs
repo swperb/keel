@@ -4,6 +4,7 @@ mod codegen;
 mod diag;
 mod lift;
 mod parse;
+mod ptx;
 mod verify;
 
 use std::process::{exit, Command};
@@ -72,7 +73,10 @@ fn front(file: &str, opts: &Opts, need_main: bool) -> ast::Program {
 
 fn build(file: &str, opts: &Opts, out: &str) {
     let prog = front(file, opts, true);
-    let c = codegen::emit(&prog);
+    let (c, notes) = codegen::emit(&prog);
+    for n in &notes {
+        eprintln!("keel: note: {}", n);
+    }
     let cpath = format!("{}.c", out);
     std::fs::write(&cpath, &c).unwrap_or_else(|e| {
         eprintln!("keel: cannot write {}: {}", cpath, e);
@@ -82,6 +86,7 @@ fn build(file: &str, opts: &Opts, out: &str) {
     let compile = |extra: &[String]| {
         Command::new(&cc)
             .args(["-O3", "-std=c11", "-w", "-o", out, &cpath, "-lpthread"])
+            .args(if c.contains("klrt_ptx") { &["-ldl"][..] } else { &[] })
             .args(extra)
             .stderr(if extra.is_empty() { std::process::Stdio::inherit() } else { std::process::Stdio::null() })
             .status()

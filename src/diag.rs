@@ -129,8 +129,9 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "V-SLICE" => "The verifier could not prove a slice's bounds satisfy 0 <= lo <= hi <= len(array).",
         "V-DISJOINT" => "Two borrows of one array, at least one exclusive, may touch overlapping indices: in one call, or across par branches (a data race). Prove the slice ranges disjoint, e.g. [lo..mid] and [mid..hi].",
         "E-PARFOR" => "A `par for` body runs once per index, in parallel. It may compute with locals declared inside it, read any array, \
-                       write `&mut` (or owned) arrays, and call non-io, non-recursive fns that do not return arrays. It may not assign a variable \
-                       declared outside it (loop-carried state), print or call io fns, allocate, `return`, or contain `par` or another `par for`.",
+                       write `&mut` (or owned) arrays, and call fns. It may not assign a variable declared outside it (loop-carried state), print or \
+                       call io fns, allocate, `return`, or contain `par` or another `par for`; nor may any fn it calls, at any depth, allocate, \
+                       recurse or run `par`. These are the rules of a GPU kernel (docs/gpu.md).",
         "V-RACE" => "Two iterations of a `par for` may touch the same array slot and at least one writes it, or the loop's `ensures` reads a slot \
                      another iteration writes. Index writes by the loop variable injectively (xs[i], xs[2 * i + 1], out[r * w + c] with 0 <= c < w), \
                      and read other slots only of arrays the loop does not write. The counterexample names two iterations i and i'.",

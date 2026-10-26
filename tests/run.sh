@@ -25,6 +25,12 @@ expect_run promote "9000000000000000000 -1 -200 "
 expect_run parfor "0 1073742784901088 0 5467600 424 -424 "
 a=$($K run examples/parfor.kl 2>/dev/null); b=$(KEEL_NO_OPENMP=1 $K run examples/parfor.kl 2>/dev/null)
 if [ -n "$a" ] && [ "$a" = "$b" ]; then echo "ok   parfor parallel == serial"; else echo "FAIL parfor parallel != serial"; fail=1; fi
+# GPU backend coverage (docs/gpu.md). Where a GPU is present the default
+# run uses it; KEEL_GPU=0 forces the CPU. tests/gpu.sh also requires that
+# the kernels actually launched.
+expect_run kernels "2258497628 2538369920 2545925184 3402507152 1018509904 122996 116 512646704 3206573824 "
+a=$($K run examples/kernels.kl 2>/dev/null); b=$(KEEL_GPU=0 $K run examples/kernels.kl 2>/dev/null)
+if [ -n "$a" ] && [ "$a" = "$b" ]; then echo "ok   kernels default == KEEL_GPU=0"; else echo "FAIL kernels default != KEEL_GPU=0"; fail=1; fi
 # Verification is deterministic: the same file gives byte-identical output.
 a=$($K check examples/msort.kl 2>&1); b=$($K check examples/msort.kl 2>&1)
 if [ "$a" = "$b" ]; then echo "ok   deterministic msort"; else echo "FAIL deterministic msort"; fail=1; fi

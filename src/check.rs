@@ -414,10 +414,10 @@ impl<'a> Checker<'a> {
         if self.parfor.is_some() && ctx == Ctx::Code {
             if sig.io {
                 self.parfor_forbid(span, &format!("calling io fn '{}'", name));
-            } else if sig.ret.is_owned_array() {
-                self.parfor_forbid(span, &format!("calling '{}', which allocates the array it returns,", name));
-            } else if name == self.f.name || self.funcs.get(name).is_some_and(|g| g.decreases.is_some()) {
+            } else if name == self.f.name {
                 self.parfor_forbid(span, &format!("calling recursive fn '{}'", name));
+            } else if let Some(why) = kernel_why_not(self.funcs, name, &mut vec![]) {
+                self.parfor_forbid(span, &format!("calling '{}', which {},", name, why));
             }
         }
         self.args(name, args, span, ctx)
@@ -750,6 +750,103 @@ impl Program {
             Ty::Named(id) => self.struct_fields(id)?.iter().find(|x| x.name == f).map(|x| x.ty),
             _ => None,
         }
+    }
+}
+
+/// Why fn `name`, or anything it calls, cannot run inside a `par for`
+/// body (a GPU kernel): it allocates, recurses, or runs `par`. io needs no
+/// check here: a non-io fn cannot reach io.
+pub fn kernel_why_not(funcs: &HashMap<String, &Func>, name: &str, stack: &mut Vec<String>) -> Option<String> {
+    let f = funcs.get(name)?;
+    if f.kind != FnKind::Code || stack.iter().any(|n| n == name) {
+        return None;
+    }
+    if f.decreases.is_some() {
+        return Some("is recursive".into());
+    }
+    if f.ret.is_owned_array() {
+        return Some("allocates the array it returns".into());
+    }
+    stack.push(name.to_string());
+    let r = block_kernel_why(funcs, &f.body, stack);
+    stack.pop();
+    r
+}
+
+fn block_kernel_why(funcs: &HashMap<String, &Func>, b: &Block, stack: &mut Vec<String>) -> Option<String> {
+    for s in b {
+        let mut es: Vec<&Expr> = vec![];
+        let r = match &s.k {
+            StmtK::Let { ty, init, .. } => {
+                if ty.is_owned_array() {
+                    return Some("allocates an array".into());
+                }
+                es.push(init);
+                None
+            }
+            StmtK::Par(_) | StmtK::ParFor { .. } => return Some("runs par".into()),
+            StmtK::Assign { val, .. } => {
+                es.push(val);
+                None
+            }
+            StmtK::Store { idx, val, .. } => {
+                es.push(idx);
+                es.push(val);
+                None
+            }
+            StmtK::If { cond, then, els } => {
+                es.push(cond);
+                block_kernel_why(funcs, then, stack).or_else(|| els.as_ref().and_then(|e| block_kernel_why(funcs, e, stack)))
+            }
+            StmtK::While { cond, body, .. } => {
+                es.push(cond);
+                block_kernel_why(funcs, body, stack)
+            }
+            StmtK::Match { scrut, arms, .. } => {
+                es.push(scrut);
+                arms.iter().find_map(|a| block_kernel_why(funcs, &a.body, stack))
+            }
+            StmtK::Return(Some(e)) | StmtK::Expr(e) => {
+                es.push(e);
+                None
+            }
+            StmtK::Return(None) | StmtK::Assert(_) => None,
+        };
+        if r.is_some() {
+            return r;
+        }
+        let mut calls = vec![];
+        es.iter().for_each(|e| code_calls(e, &mut calls));
+        for c in calls {
+            if c == "array" {
+                return Some("allocates an array".into());
+            }
+            if let Some(w) = kernel_why_not(funcs, &c, stack) {
+                return Some(format!("calls '{}', which {}", c, w));
+            }
+        }
+    }
+    None
+}
+
+/// Functions called by executable code in `e` (specifications are erased).
+fn code_calls(e: &Expr, out: &mut Vec<String>) {
+    match &e.k {
+        ExprK::Call(n, args) => {
+            out.push(n.clone());
+            args.iter().for_each(|a| code_calls(a, out));
+        }
+        ExprK::Index(_, a) | ExprK::Unary(_, a) | ExprK::Field(a, _) | ExprK::Is(a, _, _) => code_calls(a, out),
+        ExprK::Binary(_, a, b) => {
+            code_calls(a, out);
+            code_calls(b, out);
+        }
+        ExprK::Borrow { range: Some((lo, hi)), .. } => {
+            code_calls(lo, out);
+            code_calls(hi, out);
+        }
+        ExprK::Lit { fields, .. } => fields.iter().for_each(|(_, f)| code_calls(f, out)),
+        _ => {}
     }
 }
 

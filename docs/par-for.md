@@ -158,6 +158,9 @@ Arithmetic is the same `int64_t` with operand casts as everywhere else, and
 no runtime checks are emitted. Every outer variable is shared, which the
 proof makes safe; body locals are private by scoping.
 
+When an NVIDIA GPU is present, eligible loops run as GPU kernels instead,
+falling back to this CPU loop otherwise ([gpu.md](gpu.md)).
+
 `keel build` adds OpenMP only when the program contains a `par for`. It tries
 `-fopenmp` (GCC, LLVM clang), then Apple clang's
 `-Xpreprocessor -fopenmp -lomp` against libomp in `$KEEL_LIBOMP`,
@@ -192,3 +195,32 @@ pass count (2, 21, 101 passes: 0.059, 0.150, 0.551 s parallel) confirms
 about 5 ms per 1.2 GB pass, roughly 240 GB/s, against about 113 GB/s on one
 core. "Serial" is Keel built with `KEEL_NO_OPENMP=1` and Rust with plain
 iterators. One machine, one session; treat differences under ~10% as noise.
+
+## Measured: GPU
+
+Step 2 ([gpu.md](gpu.md)) runs the same `par for` loops as NVIDIA kernels.
+`bench/parfor/gpu.sh` on one Linux machine: AMD Ryzen 5 5600X (6 cores, 12
+threads), NVIDIA GeForce RTX 5080 (driver 610.88), Ubuntu 26.04 under WSL2,
+gcc 15.2, rustc 1.99.1. Wall-clock medians of 7 whole-process runs; all four
+builds print the same checksum. The last column sums `KEEL_GPU_TIMING` over
+the run's launches.
+
+| kernel | Keel GPU | Keel CPU (OpenMP) | Keel serial | Rust rayon | GPU: copy in / kernel / copy out |
+|---|---|---|---|---|---|
+| lcg | 0.339 s | 0.761 s | 4.967 s | 0.574 s | 21.1 / 12.3 / 78.3 ms (1 launch) |
+| triad | 4.859 s | 1.226 s | 1.655 s | 1.141 s | 3682 / 32.7 / 2715 ms (23 launches) |
+
+- **lcg** (2.56 billion dependent multiply-and-remainder steps): the kernel
+  takes 12.3 ms. Most of the 0.339 s is fixed: starting CUDA and loading the
+  kernels costs about 0.28 s per process on this machine (a 1000-element
+  program takes 309 ms with the GPU, 33 ms without), and copying the 80 MB
+  result back takes 78 ms.
+- **triad** (one multiply-add per 24 bytes): the GPU loses by 4x. The
+  kernels total 33 ms, roughly 850 GB/s, but every launch copies its three
+  400 MB arrays in and the written one out over PCIe: 6.4 s of copies for
+  23 launches over the same, unchanged inputs. Keeping arrays on the device
+  between loops is the fix (gpu.md, "what is next").
+- On this CPU rayon beats Keel's OpenMP build on lcg (0.574 s vs 0.761 s)
+  and the two tie on triad; on the M5 Pro above they tied on lcg. The
+  difference is the C compiler and OpenMP runtime (gcc/libgomp here, clang
+  and LLVM's libomp there), not the generated loop.

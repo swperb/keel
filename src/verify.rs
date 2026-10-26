@@ -1204,6 +1204,10 @@ fn mods_expr(e: &Expr, out: &mut std::collections::HashSet<String>) {
     }
 }
 
+pub fn mods_of(b: &Block, out: &mut std::collections::HashSet<String>) {
+    mods_block(b, out)
+}
+
 fn mods_block(b: &Block, out: &mut std::collections::HashSet<String>) {
     for s in b {
         match &s.k {
