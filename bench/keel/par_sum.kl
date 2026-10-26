@@ -1,0 +1,36 @@
+// Bend's demos/pure_par_sum: the sum of the n = 2^d numbers from i, as a
+// fork/join tree that recurses down to single numbers, like Bend's.
+// Here d = 30 and i = 0. Above 2^16 numbers the halves run with `par`;
+// below, the same recursion runs serially. (A serial loop at the leaves
+// would be turned into a closed form by the C compiler, and then this
+// would time nothing.)
+//
+// Proved: the exact closed form (2 * sum == n * (2i + n - 1)), no
+// overflow, termination and race freedom.
+
+fn sum(i: i64, n: i64) -> i64
+  requires 0 <= i && 1 <= n && i + n <= 4_294_967_296
+  ensures 2 * result == n * ((2 * i) + n - 1)
+  decreases n
+{
+  if n == 1 {
+    return i;
+  }
+  let h: i64 = n / 2;
+  if n <= 65536 {
+    let x: i64 = sum(i, h);
+    let y: i64 = sum(i + h, n - h);
+    return x + y;
+  }
+  par {
+    let a: i64 = sum(i, h);
+    let b: i64 = sum(i + h, n - h);
+  }
+  return a + b;
+}
+
+io fn main() {
+  let s: i64 = sum(0, 1_073_741_824);
+  print(s);
+  print(wrap_u32(s));
+}

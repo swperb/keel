@@ -1,0 +1,204 @@
+// Bend's bench/runtime/tree-bitonic: a bitonic sorting network over 2^23
+// pseudo-random u32 keys, then a tree-shaped scan that checks the result
+// is sorted and folds it into a checksum. Bend's tree of leaves becomes an
+// array of length 2^d whose halves are the subtrees; every fork in Bend's
+// program is a `par` over disjoint halves here. Bend builds the leaves in
+// a different order, but any correct sort of the same keys yields the
+// same array, so the checksum matches Bend's (3787129428).
+//
+// Proved: every half-cleaner step leaves each lower element <= its upper
+// partner, every step is a permutation (each value occurs exactly as
+// often as before), bounds, termination and race freedom. Sortedness of
+// the whole network is not proven (it rests on the 0-1 principle); the
+// scan checks it at run time, as Bend's program does.
+
+spec fn p2(d: i64) -> i64
+  requires 0 <= d
+  decreases d
+{
+  if d == 0 { 1 } else { 2 * p2(d - 1) }
+}
+
+lemma p2_pos(d: i64)
+  requires 0 <= d
+  ensures p2(d) >= 1
+  decreases d
+{
+  if d > 0 {
+    p2_pos(d - 1);
+  }
+}
+
+// xorshift: x ^= x<<13; x ^= x>>17; x ^= x<<5
+fn prng(x: u32) -> u32 {
+  let b: u32 = wrap_u32(x ^ (x << 13));
+  let c: u32 = b ^ (b >> 17);
+  return wrap_u32(c ^ (c << 5));
+}
+
+fn key(i: i64) -> u32
+  requires 0 <= i && i < 4_294_967_296
+{
+  return prng(wrap_u32((i + 1) * 2654435761));
+}
+
+fn fill(xs: &mut [u32], base: i64)
+  requires 0 <= base && base + len(xs) <= 4_294_967_296
+  decreases len(xs)
+{
+  if len(xs) <= 65536 {
+    var i: i64 = 0;
+    while i < len(xs)
+      invariant 0 <= i && i <= len(xs)
+      decreases len(xs) - i
+    {
+      xs[i] = key(base + i);
+      i = i + 1;
+    }
+    return;
+  }
+  let h: i64 = len(xs) / 2;
+  par {
+    fill(&mut xs[0..h], base);
+    fill(&mut xs[h..len(xs)], base + h);
+  }
+}
+
+// Half-cleaner: compare-and-swap a[k] with b[k] for every k, so that the
+// lesser lands in a when up (the greater when not up).
+fn cswap(a: &mut [u32], b: &mut [u32], up: bool)
+  requires len(a) == len(b)
+  ensures up ==> forall k in 0..len(a) { a[k] <= b[k] }
+  ensures !up ==> forall k in 0..len(a) { a[k] >= b[k] }
+  ensures forall v: i64 { count(&a, 0, len(a), v) + count(&b, 0, len(b), v) == old(count(&a, 0, len(a), v)) + old(count(&b, 0, len(b), v)) }
+  decreases len(a)
+{
+  if len(a) <= 4096 {
+    var k: i64 = 0;
+    while k < len(a)
+      invariant 0 <= k && k <= len(a)
+      invariant up ==> forall j in 0..k { a[j] <= b[j] }
+      invariant !up ==> forall j in 0..k { a[j] >= b[j] }
+      invariant forall v: i64 { count(&a, 0, len(a), v) + count(&b, 0, len(b), v) == old(count(&a, 0, len(a), v)) + old(count(&b, 0, len(b), v)) }
+      decreases len(a) - k
+    {
+      let x: u32 = a[k];
+      let y: u32 = b[k];
+      if (up && x > y) || (!up && x < y) {
+        a[k] = y;
+        b[k] = x;
+      }
+      k = k + 1;
+    }
+    return;
+  }
+  let m: i64 = len(a) / 2;
+  assert forall v: i64 { count(&a, 0, len(a), v) == count(&a, 0, m, v) + count(&a, m, len(a), v) };
+  assert forall v: i64 { count(&b, 0, len(b), v) == count(&b, 0, m, v) + count(&b, m, len(b), v) };
+  par {
+    cswap(&mut a[0..m], &mut b[0..m], up);
+    cswap(&mut a[m..len(a)], &mut b[m..len(b)], up);
+  }
+  assert forall v: i64 { count(&a, 0, len(a), v) == count(&a, 0, m, v) + count(&a, m, len(a), v) };
+  assert forall v: i64 { count(&b, 0, len(b), v) == count(&b, 0, m, v) + count(&b, m, len(b), v) };
+}
+
+// Bitonic merge of a bitonic sequence of length 2^d.
+fn bmerge(xs: &mut [u32], d: i64, up: bool)
+  requires 0 <= d && len(xs) == p2(d)
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
+  decreases d
+{
+  if d == 0 {
+    return;
+  }
+  p2_pos(d - 1);
+  let h: i64 = len(xs) / 2;
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, h, v) + count(&xs, h, len(xs), v) };
+  cswap(&mut xs[0..h], &mut xs[h..len(xs)], up);
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, h, v) + count(&xs, h, len(xs), v) };
+  if d <= 12 {
+    bmerge(&mut xs[0..h], d - 1, up);
+    bmerge(&mut xs[h..len(xs)], d - 1, up);
+  } else {
+    par {
+      bmerge(&mut xs[0..h], d - 1, up);
+      bmerge(&mut xs[h..len(xs)], d - 1, up);
+    }
+  }
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, h, v) + count(&xs, h, len(xs), v) };
+}
+
+// Bitonic sort of 2^d keys: the halves sorted in opposite directions,
+// then merged.
+fn bsort(xs: &mut [u32], d: i64, up: bool)
+  requires 0 <= d && len(xs) == p2(d)
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
+  decreases d
+{
+  if d == 0 {
+    return;
+  }
+  p2_pos(d - 1);
+  let h: i64 = len(xs) / 2;
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, h, v) + count(&xs, h, len(xs), v) };
+  if d <= 12 {
+    bsort(&mut xs[0..h], d - 1, true);
+    bsort(&mut xs[h..len(xs)], d - 1, false);
+  } else {
+    par {
+      bsort(&mut xs[0..h], d - 1, true);
+      bsort(&mut xs[h..len(xs)], d - 1, false);
+    }
+  }
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, h, v) + count(&xs, h, len(xs), v) };
+  bmerge(&mut xs, d, up);
+}
+
+// Bend's Stat: min, max, a sortedness flag (every join checks
+// left.hi <= right.lo) and an order-sensitive mix.
+struct Stat { lo: u32, hi: u32, ok: u32, mx: u32 }
+
+fn join(a: Stat, b: Stat) -> Stat {
+  var ok: u32 = 0;
+  if a.hi <= b.lo {
+    ok = a.ok & b.ok;
+  }
+  return Stat { lo: a.lo, hi: b.hi, ok: ok, mx: wrap_u32((a.mx * 2654435761) + b.mx) };
+}
+
+fn scan(xs: &[u32]) -> Stat
+  requires len(xs) >= 1
+  decreases len(xs)
+{
+  if len(xs) == 1 {
+    return Stat { lo: xs[0], hi: xs[0], ok: 1, mx: xs[0] };
+  }
+  let h: i64 = len(xs) / 2;
+  if len(xs) <= 65536 {
+    let l: Stat = scan(&xs[0..h]);
+    let r: Stat = scan(&xs[h..len(xs)]);
+    return join(l, r);
+  }
+  par {
+    let a: Stat = scan(&xs[0..h]);
+    let b: Stat = scan(&xs[h..len(xs)]);
+  }
+  return join(a, b);
+}
+
+fn stat_out(s: Stat) -> u32 {
+  let m: u32 = wrap_u32(s.mx * 2654435761);
+  let q: u32 = wrap_u32(s.hi + (s.lo * 340573321));
+  return wrap_u32((m ^ q) + (s.ok * 2246822519));
+}
+
+io fn main() {
+  let d: i64 = 23;
+  let n: i64 = 8_388_608;
+  assert n == p2(23);
+  let xs: [u32] = array(n, 0);
+  fill(&mut xs, 0);
+  bsort(&mut xs, d, true);
+  print(stat_out(scan(&xs)));
+}

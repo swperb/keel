@@ -1,0 +1,156 @@
+// The sort task of Bend's bench/runtime/tree-bitonic (2^23 pseudo-random
+// u32 keys, then the same tree-shaped scan and checksum, 3787129428), done
+// by Keel's verified parallel mergesort (examples/msort.kl, retyped to
+// u32) instead of a bitonic network.
+//
+// Proved: the output is sorted and is a permutation of the input (every
+// value occurs exactly as often as before), plus bounds, termination and
+// race freedom.
+
+// xorshift: x ^= x<<13; x ^= x>>17; x ^= x<<5
+fn prng(x: u32) -> u32 {
+  let b: u32 = wrap_u32(x ^ (x << 13));
+  let c: u32 = b ^ (b >> 17);
+  return wrap_u32(c ^ (c << 5));
+}
+
+fn key(i: i64) -> u32
+  requires 0 <= i && i < 4_294_967_296
+{
+  return prng(wrap_u32((i + 1) * 2654435761));
+}
+
+fn fill(xs: &mut [u32], base: i64)
+  requires 0 <= base && base + len(xs) <= 4_294_967_296
+  decreases len(xs)
+{
+  if len(xs) <= 65536 {
+    var i: i64 = 0;
+    while i < len(xs)
+      invariant 0 <= i && i <= len(xs)
+      decreases len(xs) - i
+    {
+      xs[i] = key(base + i);
+      i = i + 1;
+    }
+    return;
+  }
+  let h: i64 = len(xs) / 2;
+  par {
+    fill(&mut xs[0..h], base);
+    fill(&mut xs[h..len(xs)], base + h);
+  }
+}
+
+// xs[0..mid] and xs[mid..len] are each sorted; merge them through tmp.
+fn merge(xs: &mut [u32], tmp: &mut [u32], mid: i64)
+  requires len(tmp) == len(xs) && 0 <= mid && mid <= len(xs)
+  requires forall a in 0..mid { forall b in a..mid { xs[a] <= xs[b] } }
+  requires forall a in mid..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  ensures forall a in 0..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
+{
+  var i: i64 = 0;
+  var j: i64 = mid;
+  var k: i64 = 0;
+  while k < len(xs)
+    invariant 0 <= i && i <= mid && mid <= j && j <= len(xs) && k == i + (j - mid)
+    invariant forall a in 0..k { forall b in a..k { tmp[a] <= tmp[b] } }
+    invariant k > 0 && i < mid ==> tmp[k - 1] <= xs[i]
+    invariant k > 0 && j < len(xs) ==> tmp[k - 1] <= xs[j]
+    invariant forall v: i64 { count(&tmp, 0, k, v) == count(&xs, 0, i, v) + count(&xs, mid, j, v) }
+    decreases len(xs) - k
+  {
+    if i < mid && (j == len(xs) || xs[i] <= xs[j]) {
+      tmp[k] = xs[i];
+      i = i + 1;
+    } else {
+      tmp[k] = xs[j];
+      j = j + 1;
+    }
+    k = k + 1;
+  }
+  assert forall v: i64 { count(&tmp, 0, len(xs), v) == count(&xs, 0, len(xs), v) };
+  var t: i64 = 0;
+  while t < len(xs)
+    invariant 0 <= t && t <= len(xs)
+    invariant forall a in 0..t { xs[a] == tmp[a] }
+    invariant forall v: i64 { count(&xs, 0, t, v) == count(&tmp, 0, t, v) }
+    decreases len(xs) - t
+  {
+    xs[t] = tmp[t];
+    t = t + 1;
+  }
+}
+
+fn msort(xs: &mut [u32], tmp: &mut [u32])
+  requires len(tmp) == len(xs)
+  ensures forall a in 0..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
+  decreases len(xs)
+{
+  if len(xs) <= 1 {
+    return;
+  }
+  let mid: i64 = len(xs) / 2;
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, mid, v) + count(&xs, mid, len(xs), v) };
+  if len(xs) <= 4096 {
+    msort(&mut xs[0..mid], &mut tmp[0..mid]);
+    msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
+  } else {
+    par {
+      msort(&mut xs[0..mid], &mut tmp[0..mid]);
+      msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
+    }
+  }
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, mid, v) + count(&xs, mid, len(xs), v) };
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) };
+  merge(&mut xs, &mut tmp, mid);
+}
+
+// Bend's Stat: min, max, a sortedness flag (every join checks
+// left.hi <= right.lo) and an order-sensitive mix.
+struct Stat { lo: u32, hi: u32, ok: u32, mx: u32 }
+
+fn join(a: Stat, b: Stat) -> Stat {
+  var ok: u32 = 0;
+  if a.hi <= b.lo {
+    ok = a.ok & b.ok;
+  }
+  return Stat { lo: a.lo, hi: b.hi, ok: ok, mx: wrap_u32((a.mx * 2654435761) + b.mx) };
+}
+
+fn scan(xs: &[u32]) -> Stat
+  requires len(xs) >= 1
+  decreases len(xs)
+{
+  if len(xs) == 1 {
+    return Stat { lo: xs[0], hi: xs[0], ok: 1, mx: xs[0] };
+  }
+  let h: i64 = len(xs) / 2;
+  if len(xs) <= 65536 {
+    let l: Stat = scan(&xs[0..h]);
+    let r: Stat = scan(&xs[h..len(xs)]);
+    return join(l, r);
+  }
+  par {
+    let a: Stat = scan(&xs[0..h]);
+    let b: Stat = scan(&xs[h..len(xs)]);
+  }
+  return join(a, b);
+}
+
+fn stat_out(s: Stat) -> u32 {
+  let m: u32 = wrap_u32(s.mx * 2654435761);
+  let q: u32 = wrap_u32(s.hi + (s.lo * 340573321));
+  return wrap_u32((m ^ q) + (s.ok * 2246822519));
+}
+
+io fn main() {
+  let n: i64 = 8_388_608;
+  let xs: [u32] = array(n, 0);
+  let tmp: [u32] = array(n, 0);
+  fill(&mut xs, 0);
+  msort(&mut xs, &mut tmp);
+  print(stat_out(scan(&xs)));
+}

@@ -1,0 +1,192 @@
+// Bend's bench/runtime/tree-matmul: 384 rounds (picked by a hashed index
+// over a 2^9-leaf fork tree), each multiplying two 128 x 128 quad-tree
+// matrices in wrapping u32, checksumming the product and verifying it
+// with Freivalds' check (C r == A (B r)). Output: the wrapping sum over
+// rounds of (checksum ^ seed) + (1 if the check passed).
+//
+// Bend's quad-trees become arrays in Z-order (Morton order): a matrix of
+// size 2^d x 2^d is four quarter arrays, top-left, top-right, bottom-left,
+// bottom-right, each in the same order; a vector is its two halves. The
+// product accumulates into its output (C += A B), which in wrapping u32
+// gives exactly Bend's P + Q at every node.
+//
+// Proved: every index is in bounds for every depth, terminating
+// recursion, and race freedom of the parallel rounds (each has its own
+// arrays). The arithmetic is wrapping u32 by design, as in Bend; the
+// product's correctness is checked at run time by Freivalds, as in Bend.
+
+spec fn p2(d: i64) -> i64
+  requires 0 <= d
+  decreases d
+{
+  if d == 0 { 1 } else { 2 * p2(d - 1) }
+}
+
+spec fn p4(d: i64) -> i64
+  requires 0 <= d
+  decreases d
+{
+  if d == 0 { 1 } else { 4 * p4(d - 1) }
+}
+
+lemma pos(d: i64)
+  requires 0 <= d
+  ensures p2(d) >= 1 && p4(d) >= 1
+  decreases d
+{
+  if d > 0 {
+    pos(d - 1);
+  }
+}
+
+fn mat_gen(m: &mut [u32], d: i64, s: u32)
+  requires 0 <= d && len(m) == p4(d)
+  decreases d
+{
+  if d == 0 {
+    m[0] = s % 100;
+    return;
+  }
+  pos(d - 1);
+  let q: i64 = len(m) / 4;
+  mat_gen(&mut m[0..q], d - 1, wrap_u32((s * 1664525) + 1));
+  mat_gen(&mut m[q..(2 * q)], d - 1, wrap_u32((s * 214013) + 3));
+  mat_gen(&mut m[(2 * q)..(3 * q)], d - 1, wrap_u32((s * 16843009) + 5));
+  mat_gen(&mut m[(3 * q)..len(m)], d - 1, wrap_u32((s * 48271) + 7));
+}
+
+fn vec_gen(v: &mut [u32], d: i64, s: u32)
+  requires 0 <= d && len(v) == p2(d)
+  decreases d
+{
+  if d == 0 {
+    v[0] = (wrap_u32(s * 2654435761) % 100) + 1;
+    return;
+  }
+  pos(d - 1);
+  let h: i64 = len(v) / 2;
+  vec_gen(&mut v[0..h], d - 1, wrap_u32((s * 1664525) + 1));
+  vec_gen(&mut v[h..len(v)], d - 1, wrap_u32((s * 214013) + 3));
+}
+
+// c += a b, quadrant by quadrant: c00 += a00 b00 + a01 b10, and so on.
+fn mul_add(a: &[u32], b: &[u32], c: &mut [u32], d: i64)
+  requires 0 <= d && len(a) == p4(d) && len(b) == p4(d) && len(c) == p4(d)
+  decreases d
+{
+  if d == 0 {
+    c[0] = wrap_u32(c[0] + (a[0] * b[0]));
+    return;
+  }
+  pos(d - 1);
+  let q: i64 = len(c) / 4;
+  mul_add(&a[0..q], &b[0..q], &mut c[0..q], d - 1);
+  mul_add(&a[q..(2 * q)], &b[(2 * q)..(3 * q)], &mut c[0..q], d - 1);
+  mul_add(&a[0..q], &b[q..(2 * q)], &mut c[q..(2 * q)], d - 1);
+  mul_add(&a[q..(2 * q)], &b[(3 * q)..len(b)], &mut c[q..(2 * q)], d - 1);
+  mul_add(&a[(2 * q)..(3 * q)], &b[0..q], &mut c[(2 * q)..(3 * q)], d - 1);
+  mul_add(&a[(3 * q)..len(a)], &b[(2 * q)..(3 * q)], &mut c[(2 * q)..(3 * q)], d - 1);
+  mul_add(&a[(2 * q)..(3 * q)], &b[q..(2 * q)], &mut c[(3 * q)..len(c)], d - 1);
+  mul_add(&a[(3 * q)..len(a)], &b[(3 * q)..len(b)], &mut c[(3 * q)..len(c)], d - 1);
+}
+
+// o += m v: o0 += m00 v0 + m01 v1, o1 += m10 v0 + m11 v1.
+fn mv_add(m: &[u32], v: &[u32], o: &mut [u32], d: i64)
+  requires 0 <= d && len(m) == p4(d) && len(v) == p2(d) && len(o) == p2(d)
+  decreases d
+{
+  if d == 0 {
+    o[0] = wrap_u32(o[0] + (m[0] * v[0]));
+    return;
+  }
+  pos(d - 1);
+  let q: i64 = len(m) / 4;
+  let h: i64 = len(v) / 2;
+  mv_add(&m[0..q], &v[0..h], &mut o[0..h], d - 1);
+  mv_add(&m[q..(2 * q)], &v[h..len(v)], &mut o[0..h], d - 1);
+  mv_add(&m[(2 * q)..(3 * q)], &v[0..h], &mut o[h..len(o)], d - 1);
+  mv_add(&m[(3 * q)..len(m)], &v[h..len(v)], &mut o[h..len(o)], d - 1);
+}
+
+fn cksum(m: &[u32]) -> u32 {
+  var s: u32 = 0;
+  var i: i64 = 0;
+  while i < len(m)
+    invariant 0 <= i && i <= len(m)
+    decreases len(m) - i
+  {
+    s = wrap_u32(s + m[i]);
+    i = i + 1;
+  }
+  return s;
+}
+
+fn same(x: &[u32], y: &[u32]) -> bool
+  requires len(x) == len(y)
+{
+  var i: i64 = 0;
+  while i < len(x)
+    invariant 0 <= i && i <= len(x)
+    decreases len(x) - i
+  {
+    if x[i] != y[i] {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+// One round at depth 7 (128 x 128): A, B, r generated from seed s; C = A B; Freivalds checks
+// C r == A (B r).
+fn round(s: u32) -> u32 {
+  let d: i64 = 7;
+  let n: i64 = 16384;
+  let k: i64 = 128;
+  assert n == p4(7) && k == p2(7);
+  let a: [u32] = array(n, 0);
+  let b: [u32] = array(n, 0);
+  let c: [u32] = array(n, 0);
+  let r: [u32] = array(k, 0);
+  let t1: [u32] = array(k, 0);
+  let u: [u32] = array(k, 0);
+  let t2: [u32] = array(k, 0);
+  mat_gen(&mut a, d, wrap_u32(s + 1));
+  mat_gen(&mut b, d, wrap_u32(s + 2));
+  vec_gen(&mut r, d, wrap_u32(s + 3));
+  mul_add(&a, &b, &mut c, d);
+  let ck: u32 = cksum(&c);
+  mv_add(&c, &r, &mut t1, d);
+  mv_add(&b, &r, &mut u, d);
+  mv_add(&a, &u, &mut t2, d);
+  var ok: u32 = 0;
+  if same(&t1, &t2) {
+    ok = 1;
+  }
+  return wrap_u32((ck ^ wrap_u32(s * 2654435761)) + ok);
+}
+
+// The fork tree over the 2^bg leaves from i; leaf i runs a round when its
+// hashed index p = (i * 2654435761) & 511 is below 384, with seed hash(p).
+fn batch(bg: i64, i: i64) -> u32
+  requires 0 <= bg && bg <= 9 && 0 <= i && i + (1 << bg) <= 512
+  decreases bg
+{
+  if bg == 0 {
+    let p: i64 = wrap_u32(i * 2654435761) & 511;
+    if p < 384 {
+      return round(wrap_u32(p * 2654435761));
+    }
+    return 0;
+  }
+  let h: i64 = 1 << (bg - 1);
+  par {
+    let x: u32 = batch(bg - 1, i);
+    let y: u32 = batch(bg - 1, i + h);
+  }
+  return wrap_u32(x + y);
+}
+
+io fn main() {
+  print(batch(9, 0));
+}

@@ -1,0 +1,163 @@
+// Bend's bench/runtime/histogram: 128 rounds; each fills 2^24 pseudo-random
+// keys in 2^11 blocks, counts each block into its own 256-bucket row of a
+// 2^11 x 256 table (pass 1), sums each bucket's column (pass 2) and folds
+// the 256 counts into a checksum h = h * 2654435761 ^ c (u32), carried
+// across rounds. Expected output: 122845198. At 2^11 rows Bend's pass 2
+// takes its one-step path (no row groups), which is the one ported here.
+//
+// Bend shares the key array and the table between lanes through Base's
+// @unsafe Array.fork. Here each lane gets a disjoint slice, and the
+// verifier proves the lanes cannot race.
+//
+// Proved: the counts are exact. Every row entry is the number of keys
+// equal to that bucket in the block, and every final count is the number
+// of keys equal to that bucket in the whole array (count is the built-in
+// multiset count). So no count overflows a u32 and no bucket index is out
+// of bounds; plus termination and race freedom.
+
+// xorshift: x ^= x<<13; x ^= x>>17; x ^= x<<5
+fn prng(x: u32) -> u32 {
+  let b: u32 = wrap_u32(x ^ (x << 13));
+  let c: u32 = b ^ (b >> 17);
+  return wrap_u32(c ^ (c << 5));
+}
+
+// Keys base .. base + len(xs) of round seed s.
+fn fill(xs: &mut [u32], base: i64, s: i64)
+  requires 0 <= base && base + len(xs) <= 4_294_967_296 && 0 <= s && s < 1_000_000
+  ensures forall k in 0..len(xs) { xs[k] < 256 }
+  decreases len(xs)
+{
+  if len(xs) <= 8192 {
+    var i: i64 = 0;
+    while i < len(xs)
+      invariant 0 <= i && i <= len(xs)
+      invariant forall k in 0..i { xs[k] < 256 }
+      decreases len(xs) - i
+    {
+      xs[i] = prng(prng(wrap_u32(((base + i + 1) * 2654435761) + s))) & 255;
+      i = i + 1;
+    }
+    return;
+  }
+  let h: i64 = len(xs) / 2;
+  par {
+    fill(&mut xs[0..h], base, s);
+    fill(&mut xs[h..len(xs)], base + h, s);
+  }
+}
+
+// Pass 1 for one block: its row zeroed, then its 8192 keys (from base)
+// counted into it.
+fn count_block(keys: &[u32], base: i64, row: &mut [u32])
+  requires len(row) == 256 && 0 <= base && base + 8192 <= len(keys)
+  requires forall k in 0..len(keys) { keys[k] < 256 }
+  ensures forall c in 0..256 { row[c] == count(&keys, base, base + 8192, c) && row[c] <= 8192 }
+{
+  var z: i64 = 0;
+  while z < 256
+    invariant 0 <= z && z <= 256
+    invariant forall c in 0..z { row[c] == 0 }
+    decreases 256 - z
+  {
+    row[z] = 0;
+    z = z + 1;
+  }
+  var j: i64 = base;
+  while j < base + 8192
+    invariant base <= j && j <= base + 8192
+    invariant forall c in 0..256 { row[c] == count(&keys, base, j, c) && row[c] <= j - base }
+    decreases base + 8192 - j
+  {
+    let b: u32 = keys[j];
+    row[b] = row[b] + 1;
+    j = j + 1;
+  }
+}
+
+// Pass 1 over the nb blocks from block g0: t[k] is bucket k % 256 of block
+// g0 + k / 256, whose keys are keys[(g0 + k / 256) * 8192 ..][..8192].
+// The halves run in parallel, each on its own rows of t.
+fn rows(keys: &[u32], t: &mut [u32], g0: i64, nb: i64)
+  requires 1 <= nb && 0 <= g0 && (g0 + nb) * 8192 <= len(keys) && len(t) == nb * 256
+  requires forall k in 0..len(keys) { keys[k] < 256 }
+  ensures forall k in 0..len(t) { t[k] == count(&keys, (g0 + (k / 256)) * 8192, ((g0 + (k / 256)) * 8192) + 8192, k % 256) && t[k] <= 8192 }
+  decreases nb
+{
+  if nb == 1 {
+    count_block(&keys, g0 * 8192, &mut t);
+    return;
+  }
+  let h: i64 = nb / 2;
+  par {
+    rows(&keys, &mut t[0..(h * 256)], g0, h);
+    rows(&keys, &mut t[(h * 256)..len(t)], g0 + h, nb - h);
+  }
+}
+
+// Pass 2: count c0 + c is the sum of column c0 + c over the nb rows. The
+// halves of the bucket range run in parallel.
+fn cols(keys: &[u32], t: &[u32], nb: i64, cs: &mut [u32], c0: i64)
+  requires 1 <= nb && nb <= 2048 && len(keys) == nb * 8192 && len(t) == nb * 256
+  requires 0 <= c0 && c0 + len(cs) <= 256
+  requires forall k in 0..len(t) { t[k] == count(&keys, (k / 256) * 8192, ((k / 256) * 8192) + 8192, k % 256) && t[k] <= 8192 }
+  ensures forall c in 0..len(cs) { cs[c] == count(&keys, 0, len(keys), c0 + c) }
+  decreases len(cs)
+{
+  if len(cs) <= 16 {
+    var c: i64 = 0;
+    while c < len(cs)
+      invariant 0 <= c && c <= len(cs)
+      invariant forall k in 0..c { cs[k] == count(&keys, 0, len(keys), c0 + k) }
+      decreases len(cs) - c
+    {
+      var s: i64 = 0;
+      var g: i64 = 0;
+      while g < nb
+        invariant 0 <= g && g <= nb
+        invariant s == count(&keys, 0, g * 8192, c0 + c) && s <= g * 8192
+        decreases nb - g
+      {
+        assert ((g * 256) + c0 + c) / 256 == g && ((g * 256) + c0 + c) % 256 == c0 + c;
+        s = s + t[(g * 256) + c0 + c];
+        g = g + 1;
+      }
+      cs[c] = s;
+      c = c + 1;
+    }
+    return;
+  }
+  let h: i64 = len(cs) / 2;
+  par {
+    cols(&keys, &t, nb, &mut cs[0..h], c0);
+    cols(&keys, &t, nb, &mut cs[h..len(cs)], c0 + h);
+  }
+}
+
+io fn main() {
+  let nb: i64 = 2048;
+  let n: i64 = 16_777_216;
+  let keys: [u32] = array(n, 0);
+  let t: [u32] = array(nb * 256, 0);
+  let cs: [u32] = array(256, 0);
+  var h: u32 = 0;
+  var r: i64 = 0;
+  while r < 128
+    invariant 0 <= r && r <= 128
+    decreases 128 - r
+  {
+    fill(&mut keys, 0, 7 + r);
+    rows(&keys, &mut t, 0, nb);
+    cols(&keys, &t, nb, &mut cs, 0);
+    var c: i64 = 0;
+    while c < 256
+      invariant 0 <= c && c <= 256
+      decreases 256 - c
+    {
+      h = wrap_u32(h * 2654435761) ^ cs[c];
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  print(h);
+}
