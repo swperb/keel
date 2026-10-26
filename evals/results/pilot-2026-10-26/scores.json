@@ -1,0 +1,320 @@
+{
+  "haiku/keel": {
+    "01-midpoint": {
+      "contract_lines": 1,
+      "self_ok": true,
+      "proved": 20,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "02-clamp-add": {
+      "contract_lines": 5,
+      "self_ok": true,
+      "proved": 29,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "03-gcd": {
+      "contract_lines": 5,
+      "self_ok": true,
+      "proved": 9,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "04-lower-bound": {
+      "contract_lines": 8,
+      "self_ok": true,
+      "proved": 27,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "05-max-subarray": {
+      "contract_lines": 7,
+      "self_ok": true,
+      "proved": 17,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "06-calc": {
+      "contract_lines": 0,
+      "self_ok": true,
+      "proved": 18,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "haiku/rust": {
+    "01-midpoint": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "02-clamp-add": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "03-gcd": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "04-lower-bound": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "05-max-subarray": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "06-calc": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "opus/keel": {
+    "01-midpoint": {
+      "contract_lines": 2,
+      "self_ok": true,
+      "proved": 20,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "02-clamp-add": {
+      "contract_lines": 3,
+      "self_ok": true,
+      "proved": 16,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "03-gcd": {
+      "contract_lines": 4,
+      "self_ok": true,
+      "proved": 9,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "04-lower-bound": {
+      "contract_lines": 6,
+      "self_ok": true,
+      "proved": 25,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "05-max-subarray": {
+      "contract_lines": 7,
+      "self_ok": true,
+      "proved": 16,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "06-calc": {
+      "contract_lines": 6,
+      "self_ok": true,
+      "proved": 65,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "opus/rust": {
+    "01-midpoint": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "02-clamp-add": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "03-gcd": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "04-lower-bound": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "05-max-subarray": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "06-calc": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    }
+  },
+  "sonnet/keel": {
+    "01-midpoint": {
+      "contract_lines": 1,
+      "self_ok": true,
+      "proved": 21,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "02-clamp-add": {
+      "contract_lines": 5,
+      "self_ok": true,
+      "proved": 31,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "03-gcd": {
+      "contract_lines": 4,
+      "self_ok": true,
+      "proved": 9,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "04-lower-bound": {
+      "contract_lines": 8,
+      "self_ok": true,
+      "proved": 27,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "05-max-subarray": {
+      "contract_lines": 7,
+      "self_ok": true,
+      "proved": 16,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "06-calc": {
+      "contract_lines": 0,
+      "self_ok": true,
+      "proved": 21,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "sonnet/rust": {
+    "01-midpoint": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "02-clamp-add": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "03-gcd": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "04-lower-bound": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "05-max-subarray": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "06-calc": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  }
+}

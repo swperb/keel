@@ -1,0 +1,41 @@
+enum Op { Add { a: i64, b: i64 }, Div { a: i64, b: i64 }, Neg { a: i64 } }
+enum Res { Ok { v: i64 }, Err }
+
+fn eval(op: Op) -> Res
+  ensures (op is Op.Add) ==> ((result is Res.Ok) == ((-9223372036854775808 <= (op as Op.Add).a + (op as Op.Add).b) && ((op as Op.Add).a + (op as Op.Add).b <= 9223372036854775807)))
+  ensures ((op is Op.Add) && (result is Res.Ok)) ==> ((result as Res.Ok).v == (op as Op.Add).a + (op as Op.Add).b)
+  ensures ((op is Op.Neg) && (result is Res.Ok)) ==> ((result as Res.Ok).v == 0 - (op as Op.Neg).a)
+  ensures (op is Op.Neg) ==> ((result is Res.Ok) == ((op as Op.Neg).a != -9223372036854775808))
+  ensures (op is Op.Div) ==> ((result is Res.Ok) == (((op as Op.Div).b != 0) && (((op as Op.Div).a != -9223372036854775808) || ((op as Op.Div).b != -1))))
+  ensures ((op is Op.Div) && (result is Res.Ok)) ==> ((result as Res.Ok).v == (op as Op.Div).a / (op as Op.Div).b)
+{
+  match op {
+    Op.Add(p) => {
+      if p.b >= 0 {
+        if p.a > 9223372036854775807 - p.b {
+          return Res.Err;
+        }
+      } else {
+        if p.a < -9223372036854775808 - p.b {
+          return Res.Err;
+        }
+      }
+      return Res.Ok { v: p.a + p.b };
+    }
+    Op.Div(p) => {
+      if p.b == 0 {
+        return Res.Err;
+      }
+      if p.a == -9223372036854775808 && p.b == -1 {
+        return Res.Err;
+      }
+      return Res.Ok { v: p.a / p.b };
+    }
+    Op.Neg(p) => {
+      if p.a == -9223372036854775808 {
+        return Res.Err;
+      }
+      return Res.Ok { v: 0 - p.a };
+    }
+  }
+}

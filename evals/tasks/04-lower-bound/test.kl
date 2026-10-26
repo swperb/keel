@@ -1,0 +1,19 @@
+io fn main() {
+  let e: [i64] = array(0, 0);
+  print(first_index(&e, 5));
+  let d: [i64] = array(6, 7);
+  print(first_index(&d, 7));
+  let xs: [i64] = array(7, 0);
+  xs[0] = -9223372036854775808;
+  xs[1] = -3;
+  xs[2] = 4;
+  xs[3] = 4;
+  xs[4] = 4;
+  xs[5] = 9;
+  xs[6] = 9223372036854775807;
+  print(first_index(&xs, 4));
+  print(first_index(&xs, 5));
+  print(first_index(&xs, -9223372036854775808));
+  print(first_index(&xs, 9223372036854775807));
+  print(first_index(&xs, 10));
+}

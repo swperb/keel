@@ -1,0 +1,22 @@
+fn first_index(xs: &[i64], key: i64) -> i64
+  requires forall i in 0..len(xs) { forall j in i..len(xs) { xs[i] <= xs[j] } }
+  ensures result == -1 || (0 <= result && result < len(xs) && xs[result] == key)
+  ensures result == -1 ==> forall k in 0..len(xs) { xs[k] != key }
+  ensures result >= 0 ==> forall k in 0..result { xs[k] < key }
+{
+  var lo: i64 = 0;
+  var hi: i64 = len(xs);
+  while lo < hi
+    invariant 0 <= lo && lo <= hi && hi <= len(xs)
+    invariant forall k in 0..lo { xs[k] < key }
+    invariant forall k in hi..len(xs) { xs[k] >= key }
+    decreases hi - lo
+  {
+    let mid: i64 = lo + ((hi - lo) / 2);
+    if xs[mid] < key { lo = mid + 1; } else { hi = mid; }
+  }
+  if lo < len(xs) {
+    if xs[lo] == key { return lo; }
+  }
+  return -1;
+}

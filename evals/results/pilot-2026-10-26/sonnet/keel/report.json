@@ -1,0 +1,1 @@
+{"01-midpoint": {"iterations": 1, "confident": true}, "02-clamp-add": {"iterations": 1, "confident": true}, "03-gcd": {"iterations": 1, "confident": true}, "04-lower-bound": {"iterations": 1, "confident": true}, "05-max-subarray": {"iterations": 1, "confident": true}, "06-calc": {"iterations": 1, "confident": true}}

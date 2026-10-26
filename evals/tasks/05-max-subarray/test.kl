@@ -1,0 +1,18 @@
+io fn main() {
+  let e: [i64] = array(0, 0);
+  print(max_subarray(&e));
+  let neg: [i64] = array(5, -1_000_000);
+  print(max_subarray(&neg));
+  let big: [i64] = array(1_000_000, 1_000_000);
+  print(max_subarray(&big));
+  let xs: [i64] = array(8, 0);
+  xs[0] = -2;
+  xs[1] = 1;
+  xs[2] = -3;
+  xs[3] = 4;
+  xs[4] = -1;
+  xs[5] = 2;
+  xs[6] = 1;
+  xs[7] = -5;
+  print(max_subarray(&xs));
+}

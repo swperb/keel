@@ -1,0 +1,17 @@
+fn midpoint(a: i64, b: i64) -> i64
+  ensures 2 * result <= a + b && a + b <= (2 * result) + 1
+{
+  var fa: i64 = a / 2;
+  var ra: i64 = 0;
+  if a % 2 != 0 {
+    ra = 1;
+    if a < 0 { fa = fa - 1; }
+  }
+  var fb: i64 = b / 2;
+  var rb: i64 = 0;
+  if b % 2 != 0 {
+    rb = 1;
+    if b < 0 { fb = fb - 1; }
+  }
+  return (fa + fb) + ((ra + rb) / 2);
+}

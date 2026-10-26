@@ -1,0 +1,17 @@
+fn clamp_add(a: i64, b: i64, lo: i64, hi: i64) -> i64
+  requires lo <= hi
+  ensures result >= lo && result <= hi
+  ensures (a + b >= lo && a + b <= hi) ==> result == a + b
+  ensures a + b < lo ==> result == lo
+  ensures a + b > hi ==> result == hi
+{
+  if b > 0 {
+    if a > 9223372036854775807 - b { return hi; }
+  } else {
+    if a < (-9223372036854775807 - 1) - b { return lo; }
+  }
+  let s: i64 = a + b;
+  if s < lo { return lo; }
+  if s > hi { return hi; }
+  return s;
+}

@@ -1,0 +1,32 @@
+enum Op { Add { a: i64, b: i64 }, Div { a: i64, b: i64 }, Neg { a: i64 } }
+enum Res { Ok { v: i64 }, Err }
+
+fn eval(op: Op) -> Res
+{
+  match op {
+    Op.Add(o) => {
+      if (o.b > 0) && (o.a > (9223372036854775807 - o.b)) {
+        return Res.Err;
+      }
+      if (o.b < 0) && (o.a < ((-9223372036854775807 - 1) - o.b)) {
+        return Res.Err;
+      }
+      return Res.Ok { v: o.a + o.b };
+    }
+    Op.Div(o) => {
+      if o.b == 0 {
+        return Res.Err;
+      }
+      if (o.a == (-9223372036854775807 - 1)) && (o.b == -1) {
+        return Res.Err;
+      }
+      return Res.Ok { v: o.a / o.b };
+    }
+    Op.Neg(o) => {
+      if o.a == (-9223372036854775807 - 1) {
+        return Res.Err;
+      }
+      return Res.Ok { v: 0 - o.a };
+    }
+  }
+}

@@ -1,0 +1,16 @@
+fn midpoint(a: i64, b: i64) -> i64
+  ensures ((2 * result) <= (a + b)) && ((a + b) < ((2 * result) + 2))
+{
+  let qa: i64 = a / 2;
+  let ra: i64 = a % 2;
+  let qb: i64 = b / 2;
+  let rb: i64 = b % 2;
+  let s: i64 = ra + rb;
+  if s >= 2 {
+    return qa + qb + 1;
+  }
+  if s < 0 {
+    return qa + qb - 1;
+  }
+  return qa + qb;
+}

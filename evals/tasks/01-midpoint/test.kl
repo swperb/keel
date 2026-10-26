@@ -1,0 +1,10 @@
+io fn main() {
+  print(midpoint(3, 4));
+  print(midpoint(-3, -4));
+  print(midpoint(-1, 0));
+  print(midpoint(9223372036854775807, 9223372036854775807));
+  print(midpoint(-9223372036854775808, -9223372036854775808));
+  print(midpoint(-9223372036854775808, 9223372036854775807));
+  print(midpoint(9223372036854775807, 9223372036854775806));
+  print(midpoint(-7, 2));
+}

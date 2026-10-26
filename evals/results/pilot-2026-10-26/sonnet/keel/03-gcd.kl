@@ -1,0 +1,16 @@
+fn gcd(a: i64, b: i64) -> i64
+  requires a >= 0 && b >= 0
+  ensures result >= 0
+{
+  var x: i64 = a;
+  var y: i64 = b;
+  while y != 0
+    invariant x >= 0 && y >= 0
+    decreases y
+  {
+    let t: i64 = x % y;
+    x = y;
+    y = t;
+  }
+  return x;
+}

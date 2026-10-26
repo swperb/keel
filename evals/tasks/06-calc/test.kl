@@ -1,0 +1,22 @@
+io fn show(r: Res) {
+  match r {
+    Res.Ok(o) => {
+      print(o.v);
+    }
+    Res.Err => {
+      print(-424242);
+    }
+  }
+}
+
+io fn main() {
+  show(eval(Op.Add { a: 2, b: 3 }));
+  show(eval(Op.Add { a: 9223372036854775807, b: 1 }));
+  show(eval(Op.Add { a: -9223372036854775808, b: -1 }));
+  show(eval(Op.Add { a: 9223372036854775807, b: -9223372036854775808 }));
+  show(eval(Op.Div { a: 7, b: -2 }));
+  show(eval(Op.Div { a: 5, b: 0 }));
+  show(eval(Op.Div { a: -9223372036854775808, b: -1 }));
+  show(eval(Op.Neg { a: -9223372036854775808 }));
+  show(eval(Op.Neg { a: 9223372036854775807 }));
+}

@@ -1,0 +1,9 @@
+io fn main() {
+  print(gcd(12, 18));
+  print(gcd(0, 0));
+  print(gcd(0, 7));
+  print(gcd(7, 0));
+  print(gcd(9223372036854775807, 9223372036854775807));
+  print(gcd(9223372036854775806, 6));
+  print(gcd(17, 5));
+}

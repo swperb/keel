@@ -1,0 +1,25 @@
+fn max_subarray(xs: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000 <= xs[k] && xs[k] <= 1_000_000 }
+  ensures result >= 0
+{
+  var best: i64 = 0;
+  var cur: i64 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    invariant 0 <= cur && cur <= i * 1_000_000
+    invariant 0 <= best && best <= i * 1_000_000
+    decreases len(xs) - i
+  {
+    cur = cur + xs[i];
+    if cur < 0 {
+      cur = 0;
+    }
+    if cur > best {
+      best = cur;
+    }
+    i = i + 1;
+  }
+  return best;
+}

@@ -1,0 +1,22 @@
+fn half_floor(a: i64) -> i64
+  ensures 2 * result <= a && a <= (2 * result) + 1
+{
+  var q: i64 = a / 2;
+  if a < 0 && (a % 2) != 0 {
+    q = q - 1;
+  }
+  return q;
+}
+
+fn midpoint(a: i64, b: i64) -> i64
+  ensures 2 * result <= a + b && a + b <= (2 * result) + 1
+{
+  let ha: i64 = half_floor(a);
+  let hb: i64 = half_floor(b);
+  let ra: i64 = a - (2 * ha);
+  let rb: i64 = b - (2 * hb);
+  if ra == 1 && rb == 1 {
+    return ha + hb + 1;
+  }
+  return ha + hb;
+}

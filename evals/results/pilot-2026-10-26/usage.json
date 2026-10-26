@@ -1,0 +1,32 @@
+{
+ "sonnet/rust": {
+  "tokens": 51668,
+  "tool_uses": 3,
+  "seconds": 14.9
+ },
+ "sonnet/keel": {
+  "tokens": 56268,
+  "tool_uses": 5,
+  "seconds": 29.9
+ },
+ "opus/rust": {
+  "tokens": 53152,
+  "tool_uses": 4,
+  "seconds": 38.4
+ },
+ "haiku/rust": {
+  "tokens": 59074,
+  "tool_uses": 15,
+  "seconds": 41.9
+ },
+ "opus/keel": {
+  "tokens": 58382,
+  "tool_uses": 4,
+  "seconds": 66.7
+ },
+ "haiku/keel": {
+  "tokens": 73396,
+  "tool_uses": 11,
+  "seconds": 90.7
+ }
+}
