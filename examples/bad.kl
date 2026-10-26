@@ -1,0 +1,19 @@
+// Every function here is rejected. Run `keel check examples/bad.kl`.
+fn midpoint(a: i64, b: i64) -> i64 {
+  return (a + b) / 2;
+}
+
+fn get(xs: &[i64], i: i64) -> i64
+  requires i >= 0
+{
+  return xs[i];
+}
+
+fn countdown(n: i64) -> i64
+  decreases n
+{
+  if n == 0 {
+    return 0;
+  }
+  return countdown(n - 1);
+}

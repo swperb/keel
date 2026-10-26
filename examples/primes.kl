@@ -1,0 +1,51 @@
+// Parallel prime counting. `par` runs branches on free cores; the type
+// system guarantees the branches cannot race.
+fn is_prime(n: i64) -> bool
+  requires 0 <= n && n <= 1_000_000_000
+{
+  if n < 2 {
+    return false;
+  }
+  var d: i64 = 2;
+  while d * d <= n
+    invariant 2 <= d && d <= n
+    decreases n - d
+  {
+    if n % d == 0 {
+      return false;
+    }
+    d = d + 1;
+  }
+  return true;
+}
+
+fn count_primes(lo: i64, hi: i64) -> i64
+  requires 0 <= lo && lo <= hi && hi <= 1_000_000_000
+  ensures 0 <= result && result <= hi - lo
+  decreases hi - lo
+{
+  if hi - lo <= 20_000 {
+    var c: i64 = 0;
+    var i: i64 = lo;
+    while i < hi
+      invariant lo <= i && i <= hi && 0 <= c && c <= i - lo
+      decreases hi - i
+    {
+      if is_prime(i) {
+        c = c + 1;
+      }
+      i = i + 1;
+    }
+    return c;
+  }
+  let mid: i64 = lo + ((hi - lo) / 2);
+  par {
+    let a: i64 = count_primes(lo, mid);
+    let b: i64 = count_primes(mid, hi);
+  }
+  return a + b;
+}
+
+io fn main() {
+  print(count_primes(0, 20_000_000));
+}

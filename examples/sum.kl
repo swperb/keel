@@ -1,0 +1,21 @@
+fn sum(xs: &[i64]) -> i64
+  requires forall k in 0..len(xs) { 0 <= xs[k] && xs[k] <= 1_000_000 }
+  ensures result >= 0
+{
+  var s: i64 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    invariant 0 <= s && s <= i * 1_000_000
+    decreases len(xs) - i
+  {
+    s = s + xs[i];
+    i = i + 1;
+  }
+  return s;
+}
+
+io fn main() {
+  let xs: [i64] = array(1000, 7);
+  print(sum(&xs));
+}

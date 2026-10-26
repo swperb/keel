@@ -1,0 +1,50 @@
+// Binary search over a sorted array. The verifier proves the index math
+// never overflows or goes out of bounds, the loop terminates, and the
+// answer is correct in both directions.
+fn search(xs: &[i64], key: i64) -> i64
+  requires forall i in 0..len(xs) { forall j in i..len(xs) { xs[i] <= xs[j] } }
+  ensures result == -1 || (0 <= result && result < len(xs) && xs[result] == key)
+  ensures result == -1 ==> forall k in 0..len(xs) { xs[k] != key }
+{
+  var lo: i64 = 0;
+  var hi: i64 = len(xs);
+  while lo < hi
+    invariant 0 <= lo && lo <= hi && hi <= len(xs)
+    invariant forall k in 0..lo { xs[k] < key }
+    invariant forall k in hi..len(xs) { xs[k] > key }
+    decreases hi - lo
+  {
+    let mid: i64 = lo + ((hi - lo) / 2);
+    if xs[mid] < key {
+      lo = mid + 1;
+    } else if xs[mid] > key {
+      hi = mid;
+    } else {
+      return mid;
+    }
+  }
+  return -1;
+}
+
+// Fill xs with 0, 3, 6, ... so it is sorted.
+fn fill(xs: &mut [i64])
+  requires len(xs) <= 1_000_000
+  ensures forall i in 0..len(xs) { xs[i] == i * 3 }
+{
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    invariant forall k in 0..i { xs[k] == k * 3 }
+    decreases len(xs) - i
+  {
+    xs[i] = i * 3;
+    i = i + 1;
+  }
+}
+
+io fn main() {
+  let xs: [i64] = array(1_000_000, 0);
+  fill(&mut xs);
+  print(search(&xs, 2_999_997));
+  print(search(&xs, 7));
+}
