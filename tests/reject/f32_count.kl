@@ -1,0 +1,10 @@
+// expect: E-SPEC
+// count would compare float elements: specifications cannot see them.
+fn copy(xs: &[f32], ys: &mut [f32])
+  requires len(ys) == len(xs)
+  ensures count(&ys, 0, len(ys), 0) == count(&xs, 0, len(xs), 0)
+{
+  par for i in 0..len(ys) {
+    ys[i] = xs[i];
+  }
+}

@@ -102,7 +102,8 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E-ARRAY" => "Array values (from `array(..)` or a call returning `[i64]`) may only appear as a `let` initializer or a `return` value.",
         "E-EFFECT" => "Only `io fn` functions may call `print` or other `io fn` functions. `par` branches must be pure.",
         "E-SPEC" => "Specifications (requires/ensures/invariant/decreases/assert) are pure logic: they may call `len`, `count`, `spec fn`s, and any `fn` that is pure, loop-free, non-recursive and takes no `&mut` (its body is lifted to a definition). `old(e)` is allowed in ensures, invariants and asserts. \
-                     `result` is only valid in `ensures`; `forall`/`exists` only in specifications.",
+                     `result` is only valid in `ensures`; `forall`/`exists` only in specifications. \
+                     Specifications may not mention f32 values or f32 arrays' contents, nor call fns that compute with floats: Keel proves nothing about floats (docs/f32.md).",
         "E-MUT" => "Only `var` locals can be reassigned; only owned arrays or `&mut` parameters can be written.",
         "E-RETURN" => "A function with a return type must end in `return` on every path.",
         "E-UNREACHABLE" => "Statements after `return` are rejected.",

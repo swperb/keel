@@ -8,6 +8,7 @@ use crate::diag::Diag;
 enum Tok {
     Ident(String),
     Int(i128),
+    Float(f32),
     Kw(&'static str),
     P(&'static str),
     Eof,
@@ -62,6 +63,38 @@ fn lex(src: &str) -> Result<Vec<(Tok, Span)>, Diag> {
             };
             out.push((t, span));
             continue;
+        }
+        // A float literal: digits '.' digits, optional exponent. `0..n`
+        // stays a range: a '.' must be followed by a digit.
+        if c.is_ascii_digit() {
+            let mut j = i;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j + 1 < b.len() && b[j] == b'.' && b[j + 1].is_ascii_digit() {
+                j += 1;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j < b.len() && (b[j] == b'e' || b[j] == b'E') {
+                    j += 1;
+                    if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+                        j += 1;
+                    }
+                    while j < b.len() && b[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                }
+                let text = &src[i..j];
+                col += (j - i) as u32;
+                i = j;
+                // Rust's parse rounds correctly to the nearest f32.
+                match text.parse::<f32>() {
+                    Ok(v) if v.is_finite() => out.push((Tok::Float(v), span)),
+                    _ => return Err(Diag::new("E-LEX", span, format!("float literal '{}' is not a finite f32", text))),
+                }
+                continue;
+            }
         }
         if c.is_ascii_digit() {
             let s = i;
@@ -122,6 +155,7 @@ fn desc(t: &Tok) -> String {
     match t {
         Tok::Ident(s) => format!("identifier '{}'", s),
         Tok::Int(v) => format!("integer {}", v),
+        Tok::Float(v) => format!("float {}", v),
         Tok::Kw(k) => format!("keyword '{}'", k),
         Tok::P(p) => format!("'{}'", p),
         Tok::Eof => "end of file".into(),
@@ -265,6 +299,10 @@ impl Parser {
         if let Some(k) = self.int_ty()? {
             return Ok(Ty::Int(k));
         }
+        if matches!(self.peek(), Tok::Ident(n) if n == "f32") {
+            self.bump();
+            return Ok(Ty::F32);
+        }
         if self.is_kw("bool") {
             self.bump();
             return Ok(Ty::Bool);
@@ -289,8 +327,13 @@ impl Parser {
             return self.err("a type (i64, i32, i16, i8, u32, u16, u8, bool, [T], &[T], &mut [T], or a struct/enum name)");
         }
         self.bump();
-        let Some(k) = self.int_ty()? else {
-            return self.err("an integer element type (i64, i32, i16, i8, u32, u16, u8)");
+        let k = match self.int_ty()? {
+            Some(k) => k,
+            None if matches!(self.peek(), Tok::Ident(n) if n == "f32") => {
+                self.bump();
+                IntK::F32
+            }
+            None => return self.err("an element type (i64, i32, i16, i8, u32, u16, u8, f32)"),
         };
         self.expect_p("]")?;
         Ok(t(k))
@@ -673,6 +716,10 @@ impl Parser {
                 self.bump();
                 return Ok(Expr { k: ExprK::Int(-v), span });
             }
+            if let Tok::Float(v) = *self.peek() {
+                self.bump();
+                return Ok(Expr { k: ExprK::Float(-v), span });
+            }
             let e = self.unary()?;
             return Ok(Expr { k: ExprK::Unary(UOp::Neg, Box::new(e)), span });
         }
@@ -705,6 +752,7 @@ impl Parser {
                 }
                 ExprK::Int(v)
             }
+            Tok::Float(v) => ExprK::Float(v),
             Tok::Kw("true") => ExprK::Bool(true),
             Tok::Kw("false") => ExprK::Bool(false),
             Tok::Kw("result") => ExprK::Result,

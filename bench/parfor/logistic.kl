@@ -1,0 +1,45 @@
+// f32 compute-bound kernel: 256 steps of the logistic map for each of 10M
+// slots, then a serial checksum of the bits. Same work as rayon_bench
+// logistic (main.rs); the checksums must match exactly.
+
+fn logistic(x0: f32, steps: i64) -> f32
+  requires 0 <= steps
+{
+  var x: f32 = x0;
+  var k: i64 = 0;
+  while k < steps
+    invariant 0 <= k && k <= steps
+    decreases steps - k
+  {
+    x = (3.9 * x) * (1.0 - x);
+    k = k + 1;
+  }
+  return x;
+}
+
+fn kernel(out: &mut [f32], steps: i64)
+  requires 0 <= steps && len(out) <= 1000000000
+{
+  par for i in 0..len(out) {
+    out[i] = logistic(to_f32(i + 1) / to_f32(len(out) + 2), steps);
+  }
+}
+
+fn hash(xs: &[f32]) -> i64 {
+  var h: u32 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    decreases len(xs) - i
+  {
+    h = wrap_u32((h * 31) + f32_bits(xs[i]));
+    i = i + 1;
+  }
+  return h;
+}
+
+io fn main() {
+  let out: [f32] = array(10_000_000, 0);
+  kernel(&mut out, 256);
+  print(hash(&out));
+}

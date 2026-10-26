@@ -115,7 +115,9 @@ that the compiler enforces:
   loop, so no invariant is needed. It matches Rust rayon on the kernels in
   `bench/parfor` ([docs/par-for.md](docs/par-for.md)). With an NVIDIA GPU
   the same loops run as kernels Keel emits as PTX itself, with no CUDA
-  toolkit needed to build ([docs/gpu.md](docs/gpu.md)).
+  toolkit needed to build ([docs/gpu.md](docs/gpu.md)). `f32` works in
+  both: bounds and races are still proven, float values are never reasoned
+  about, and CPU and GPU agree bit for bit ([docs/f32.md](docs/f32.md)).
 - **Automated proofs with counterexamples.** Overflow, bounds, division by
   zero, contracts and termination are discharged by an SMT solver without
   hand-written proof terms; when a proof fails, the error carries concrete

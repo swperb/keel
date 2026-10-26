@@ -1,0 +1,8 @@
+// expect: V-BOUNDS
+// No proof may depend on a float's value: x in [0, 1) is not known.
+fn f(xs: &[i64], x: f32) -> i64
+  requires len(xs) == 10
+{
+  let k: i64 = to_i64(x * 10.0);
+  return xs[k];
+}

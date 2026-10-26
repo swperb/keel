@@ -30,6 +30,10 @@ fn why_not_in(funcs: &HashMap<String, &Func>, name: &str, stack: &mut Vec<String
     if !matches!(f.ret, Ty::Int(_) | Ty::Bool | Ty::Named(_)) {
         return Some("does not return an integer, bool or a struct/enum".into());
     }
+    // A specification may not depend on a float, even one used inside.
+    if let Some(p) = f.params.iter().find(|p| p.ty.has_f32()) {
+        return Some(format!("takes '{}' as {}, and specifications cannot reason about f32", p.name, p.ty.name()));
+    }
     if let Some(p) = f.params.iter().find(|p| !matches!(p.ty, Ty::Int(_) | Ty::Bool | Ty::Named(_) | Ty::RefOf(_))) {
         return Some(format!("takes '{}' as {}, which may be mutated", p.name, p.ty.name()));
     }
@@ -45,6 +49,8 @@ fn block_why(funcs: &HashMap<String, &Func>, b: &Block, stack: &mut Vec<String>)
             StmtK::Let { init: e, ty, .. } => {
                 if ty.is_array() {
                     Some("creates an array".to_string())
+                } else if *ty == Ty::F32 {
+                    Some("computes with f32".to_string())
                 } else {
                     expr_why(funcs, e, stack)
                 }
@@ -81,6 +87,9 @@ fn expr_why(funcs: &HashMap<String, &Func>, e: &Expr, stack: &mut Vec<String>) -
             if matches!(n.as_str(), "array" | "print") {
                 return Some(format!("calls {}", n));
             }
+            if matches!(n.as_str(), "to_f32" | "to_i64" | "f32_bits") {
+                return Some("computes with f32".to_string());
+            }
             if stack.iter().any(|s| s == n) {
                 return Some(format!("is recursive (calls '{}')", n));
             }
@@ -94,6 +103,7 @@ fn expr_why(funcs: &HashMap<String, &Func>, e: &Expr, stack: &mut Vec<String>) -
         ExprK::IfE(c, a, b) => expr_why(funcs, c, stack).or_else(|| expr_why(funcs, a, stack)).or_else(|| expr_why(funcs, b, stack)),
         ExprK::Borrow { range: Some((lo, hi)), .. } => expr_why(funcs, lo, stack).or_else(|| expr_why(funcs, hi, stack)),
         ExprK::Lit { fields, .. } => fields.iter().find_map(|(_, v)| expr_why(funcs, v, stack)),
+        ExprK::Float(_) => Some("computes with f32".to_string()),
         _ => None,
     }
 }
@@ -143,7 +153,7 @@ fn subst(e: &Expr, env: &HashMap<String, Expr>) -> Expr {
         ExprK::As(a, t, v) => ExprK::As(b(a), *t, v.clone()),
         ExprK::IfE(c, x, y) => ExprK::IfE(b(c), b(x), b(y)),
         ExprK::Old(a) => ExprK::Old(b(a)),
-        ExprK::Quant { .. } | ExprK::Int(_) | ExprK::Bool(_) | ExprK::Result => return e.clone(),
+        ExprK::Quant { .. } | ExprK::Int(_) | ExprK::Float(_) | ExprK::Bool(_) | ExprK::Result => return e.clone(),
     };
     Expr { k, span: e.span }
 }

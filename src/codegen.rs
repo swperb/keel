@@ -32,6 +32,21 @@ KL_ARR(int8_t, _i8)
 KL_ARR(uint32_t, _u32)
 KL_ARR(uint16_t, _u16)
 KL_ARR(uint8_t, _u8)
+KL_ARR(float, _f32)
+
+/* f32 -> i64 toward zero, saturating, NaN -> 0: defined for every input
+   (C's own conversion is undefined out of range). Same rule as PTX cvt. */
+static int64_t klrt_f2i(float x) {
+    if (x != x) return 0;
+    if (x >= 0x1p63f) return INT64_MAX;
+    if (x < -0x1p63f) return INT64_MIN;
+    return (int64_t)x;
+}
+static int64_t klrt_fbits(float x) {
+    uint32_t b;
+    memcpy(&b, &x, sizeof b);
+    return (int64_t)b;
+}
 
 /* par: spawn only while a core is free, otherwise run inline. */
 static atomic_int klrt_live = 1;
@@ -203,6 +218,7 @@ fn arr_suffix(k: IntK) -> String {
 fn cty(t: Ty) -> String {
     match t {
         Ty::Int(k) => k.cname(),
+        Ty::F32 => "float".into(),
         Ty::Bool => "bool".into(),
         Ty::Unit => "void".into(),
         Ty::Named(id) => format!("kt_{}", type_name(id)),
@@ -277,8 +293,33 @@ impl<'a> Cg<'a> {
         self.out.push('\n');
     }
 
+    fn f32_expr(&self, e: &Expr) -> bool {
+        let var = |n: &str| self.tys.iter().rev().find_map(|m| m.get(n).copied());
+        is_f32(e, &var, &|n| self.funcs.get(n).map(|f| f.ret))
+    }
+
     fn ex(&mut self, e: &Expr) -> String {
+        if self.f32_expr(e) {
+            // IEEE f32 arithmetic: no int64 promotion. Built with
+            // -ffp-contract=off so a * b + c rounds twice, as in PTX.
+            match &e.k {
+                ExprK::Float(v) => return format!("({:?}f)", v),
+                ExprK::Unary(UOp::Neg, a) => return format!("(-{})", self.ex(a)),
+                ExprK::Binary(op, a, b) => {
+                    let (a, b) = (self.ex(a), self.ex(b));
+                    return format!("({} {} {})", a, op.sym(), b);
+                }
+                _ => {}
+            }
+        }
+        if let ExprK::Binary(op, a, b) = &e.k {
+            if self.f32_expr(a) {
+                let (a, b) = (self.ex(a), self.ex(b));
+                return format!("({} {} {})", a, op.sym(), b);
+            }
+        }
         match &e.k {
+            ExprK::Float(_) => unreachable!(),
             ExprK::Int(v) => {
                 if *v == i64::MIN as i128 {
                     "INT64_MIN".into()
@@ -368,6 +409,9 @@ impl<'a> Cg<'a> {
                 _ => unreachable!(),
             },
             "print" => format!("printf(\"%lld\\n\", (long long){})", self.ex(&args[0])),
+            "to_f32" => format!("((float)(int64_t){})", self.ex(&args[0])),
+            "to_i64" => format!("klrt_f2i({})", self.ex(&args[0])),
+            "f32_bits" => format!("klrt_fbits({})", self.ex(&args[0])),
             "array" => {
                 let n = self.ex(&args[0]);
                 let fill = self.ex(&args[1]);
@@ -639,9 +683,11 @@ impl<'a> Cg<'a> {
         let mut ps = vec!["int64_t lo".to_string(), "int64_t hi".to_string()];
         let mut call = vec![format!("lo{}", t), format!("hi{}", t)];
         let mut args = vec!["&lo".to_string(), "&n".to_string()];
-        for sname in &k.scalars {
-            ps.push(format!("int64_t s_{}", sname));
-            call.push(format!("(int64_t)k_{}", sname));
+        for (sname, ty) in &k.scalars {
+            // An f32 kernel parameter is a float; every other scalar is 64 bits.
+            let ct = if *ty == Ty::F32 { "float" } else { "int64_t" };
+            ps.push(format!("{} s_{}", ct, sname));
+            call.push(format!("({})k_{}", ct, sname));
             args.push(format!("&s_{}", sname));
         }
         let mut body = String::new();

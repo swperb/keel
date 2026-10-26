@@ -11,7 +11,7 @@ OUT=$(mktemp -d)
 (cd ../.. && cargo build --release -q)
 (cd rayon_bench && cargo build --release -q)
 R=rayon_bench/target/release/rayon_bench
-for k in lcg triad; do
+for k in lcg triad logistic; do
   $K build $k.kl -o "$OUT/$k-omp" 2>"$OUT/$k.log" || { cat "$OUT/$k.log"; exit 1; }
   if grep -q "no OpenMP" "$OUT/$k.log"; then echo "keel built $k without OpenMP; parallel numbers would be serial" >&2; exit 1; fi
   KEEL_NO_OPENMP=1 $K build $k.kl -o "$OUT/$k-serial" 2>/dev/null
@@ -28,7 +28,7 @@ def t(cmd):
 print(f"cores: {os.cpu_count()}")
 print("| kernel | Keel par for (OpenMP) | Rust rayon | Keel serial | Rust serial | Keel / rayon |")
 print("|---|---|---|---|---|---|")
-for k in ["lcg", "triad"]:
+for k in ["lcg", "triad", "logistic"]:
     kp, kps, ko = t([f"{out}/{k}-omp"])
     rp, rps, ro = t([r, k])
     ks, _, kso = t([f"{out}/{k}-serial"])

@@ -1,0 +1,4 @@
+// expect: E-TYPE
+fn f(x: f32, n: i64) -> f32 {
+  return x * n;
+}

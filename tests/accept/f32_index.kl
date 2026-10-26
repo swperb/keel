@@ -1,0 +1,18 @@
+// A float converted to an integer is unconstrained, but integer tests on
+// it are enough for a bounds proof.
+fn bucket(xs: &[f32], counts: &mut [i64])
+  requires len(counts) > 0
+  requires forall k in 0..len(counts) { 0 <= counts[k] && counts[k] <= 1000000 }
+{
+  var i: i64 = 0;
+  while i < len(xs) && i < 1000000
+    invariant 0 <= i
+    decreases len(xs) - i
+  {
+    let k: i64 = to_i64(xs[i] * 10.0);
+    if 0 <= k && k < len(counts) && counts[k] < 1000000 {
+      counts[k] = counts[k] + 1;
+    }
+    i = i + 1;
+  }
+}
