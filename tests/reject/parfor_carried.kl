@@ -1,0 +1,10 @@
+// expect: E-PARFOR
+fn f(xs: &[i64]) -> i64
+  requires forall k in 0..len(xs) { 0 <= xs[k] && xs[k] <= 1000 }
+{
+  var s: i64 = 0;
+  par for i in 0..len(xs) {
+    s = s + xs[i];
+  }
+  return s;
+}

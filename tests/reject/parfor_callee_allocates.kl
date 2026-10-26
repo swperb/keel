@@ -1,0 +1,23 @@
+// expect: E-PARFOR
+// A kernel body may not allocate, even two calls down.
+fn scratch(n: i64) -> i64
+  requires 0 <= n && n <= 100
+{
+  let t: [i64] = array(n, 0);
+  return len(t);
+}
+
+fn step(x: i64) -> i64
+  requires 0 <= x && x <= 100
+{
+  let r: i64 = scratch(x);
+  return r;
+}
+
+fn f(out: &mut [i64])
+  requires len(out) <= 100
+{
+  par for i in 0..len(out) {
+    out[i] = step(i);
+  }
+}

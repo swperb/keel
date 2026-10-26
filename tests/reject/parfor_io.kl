@@ -1,0 +1,6 @@
+// expect: E-EFFECT
+io fn main() {
+  par for i in 0..10 {
+    print(i);
+  }
+}

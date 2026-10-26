@@ -1,0 +1,51 @@
+// Compute-bound kernel: out[i] = 256 LCG steps from i, for 10M slots,
+// then a serial checksum. Same work as rayon_bench lcg (main.rs).
+
+fn mix(x0: i64, rounds: i64) -> i64
+  requires 0 <= x0 && x0 < 2147483648 && 0 <= rounds
+  ensures 0 <= result && result < 2147483648
+{
+  var x: i64 = x0;
+  var k: i64 = 0;
+  while k < rounds
+    invariant 0 <= k && k <= rounds && 0 <= x && x < 2147483648
+    decreases rounds - k
+  {
+    x = ((x * 1103515245) + 12345) % 2147483648;
+    k = k + 1;
+  }
+  return x;
+}
+
+fn kernel(out: &mut [i64], rounds: i64)
+  requires 0 <= rounds && len(out) <= 2147483648
+  ensures forall k in 0..len(out) { 0 <= out[k] && out[k] < 2147483648 }
+{
+  par for i in 0..len(out)
+    ensures 0 <= out[i] && out[i] < 2147483648
+  {
+    out[i] = mix(i, rounds);
+  }
+}
+
+fn total(xs: &[i64]) -> i64
+  requires len(xs) <= 1000000000
+  requires forall k in 0..len(xs) { 0 <= xs[k] && xs[k] < 2147483648 }
+{
+  var s: i64 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs) && 0 <= s && s <= 2147483648 * i
+    decreases len(xs) - i
+  {
+    s = s + xs[i];
+    i = i + 1;
+  }
+  return s;
+}
+
+io fn main() {
+  let out: [i64] = array(10_000_000, 0);
+  kernel(&mut out, 256);
+  print(total(&out));
+}

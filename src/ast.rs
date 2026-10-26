@@ -241,6 +241,9 @@ pub enum StmtK {
     Return(Option<Expr>),
     Assert(Expr),
     Par(Vec<ParBranch>),
+    /// `par for i in lo..hi ensures E(i) { body }`: iterations run in
+    /// parallel; `ensures` states what one iteration did (see docs/par-for.md).
+    ParFor { var: String, lo: Expr, hi: Expr, ens: Vec<Expr>, body: Block },
     Match { scrut: Expr, enum_id: u32, arms: Vec<Arm> },
     Expr(Expr),
 }

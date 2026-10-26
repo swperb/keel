@@ -15,7 +15,7 @@ enum Tok {
 
 const KEYWORDS: &[&str] = &[
     "fn", "io", "let", "var", "if", "else", "while", "invariant", "decreases", "requires", "ensures",
-    "return", "assert", "par", "forall", "exists", "in", "true", "false", "result", "mut", "i64", "bool",
+    "return", "assert", "par", "for", "forall", "exists", "in", "true", "false", "result", "mut", "i64", "bool",
     "struct", "enum", "match", "is", "as", "spec", "lemma", "old",
 ];
 
@@ -420,6 +420,22 @@ impl Parser {
                 let e = self.expr()?;
                 self.expect_p(";")?;
                 StmtK::Assert(e)
+            }
+            Tok::Kw("par") if matches!(self.toks[self.pos + 1].0, Tok::Kw("for")) => {
+                self.bump();
+                self.bump();
+                let var = self.ident()?;
+                self.expect_kw("in")?;
+                let lo = self.arith()?;
+                self.expect_p("..")?;
+                let hi = self.arith()?;
+                let mut ens = vec![];
+                while self.is_kw("ensures") {
+                    self.bump();
+                    ens.push(self.expr()?);
+                }
+                let body = self.block()?;
+                StmtK::ParFor { var, lo, hi, ens, body }
             }
             Tok::Kw("par") => {
                 self.bump();

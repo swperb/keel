@@ -1,0 +1,20 @@
+// expect: E-PARFOR
+fn tri(n: i64) -> i64
+  requires 0 <= n && n <= 100
+  ensures 0 <= result && result <= 10000
+  decreases n
+{
+  if n == 0 {
+    return 0;
+  }
+  let r: i64 = tri(n - 1);
+  return r + n;
+}
+
+fn f(out: &mut [i64])
+  requires len(out) <= 100
+{
+  par for i in 0..len(out) {
+    out[i] = tri(i);
+  }
+}

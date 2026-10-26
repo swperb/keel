@@ -1,0 +1,13 @@
+// Scatter through an injective index: even slots get i, odd slots -i.
+// Reads of a written array are fine at the iteration's own slots.
+fn interleave(out: &mut [i64], n: i64)
+  requires 0 <= n && len(out) == 2 * n
+  ensures forall k in 0..n { out[2 * k] == k && out[(2 * k) + 1] == -k }
+{
+  par for i in 0..n
+    ensures out[2 * i] == i && out[(2 * i) + 1] == -i
+  {
+    out[2 * i] = i;
+    out[(2 * i) + 1] = -out[2 * i];
+  }
+}

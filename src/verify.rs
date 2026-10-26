@@ -149,6 +149,26 @@ struct Borrowed {
     branch: usize,
 }
 
+/// How a `par for` iteration touches an array slot range.
+#[derive(Clone, Copy, PartialEq)]
+enum AKind {
+    Read,
+    Write,
+    /// Read by the loop's `ensures`, which is carried to the final state.
+    EnsRead,
+}
+
+/// One array access by a `par for` iteration: slots [lo, hi) of `name`
+/// (one slot when `hi` is None), on the path `pc`.
+struct Access {
+    name: String,
+    lo: String,
+    hi: Option<String>,
+    kind: AKind,
+    pc: Vec<String>,
+    span: Span,
+}
+
 enum Out {
     Scalar(String),
     Arr(V),
@@ -178,9 +198,28 @@ struct Gen<'a> {
     quant: usize,
     /// Element type of the array an `array(n, fill)` call is bound to.
     arr_elem: IntK,
+    /// While verifying a `par for` body: the array accesses of one iteration.
+    rec: Option<Vec<Access>>,
+    /// Recording the reads of a `par for` ensures (specification reads count).
+    rec_ens: bool,
+    /// Inside `old(..)`: reads of the entry state are not accesses.
+    in_old: usize,
 }
 
 impl<'a> Gen<'a> {
+    /// Record an access by the current `par for` iteration, if any. Reads
+    /// in specifications are ghost and never touch memory, except in the
+    /// loop's own ensures.
+    fn record(&mut self, st: &St, name: &str, lo: &str, hi: Option<&str>, write: bool, spec: bool, span: Span) {
+        if self.in_old > 0 || (spec && !self.rec_ens) {
+            return;
+        }
+        let kind = if write { AKind::Write } else if self.rec_ens { AKind::EnsRead } else { AKind::Read };
+        if let Some(r) = &mut self.rec {
+            r.push(Access { name: name.to_string(), lo: lo.to_string(), hi: hi.map(|h| h.to_string()), kind, pc: st.pc.clone(), span });
+        }
+    }
+
     fn ranges(&self, term: &str, ty: Ty, out: &mut Vec<String>) {
         match ty {
             Ty::Int(k) => out.push(range_of(term, k)),
@@ -323,6 +362,7 @@ impl<'a> Gen<'a> {
                         "prove 0 <= index < len(array) with a requires clause or loop invariant",
                     );
                 }
+                self.record(st, n, &iv, None, false, spec, e.span);
                 let t = format!("(select {} {})", a.smt, iv);
                 if !spec {
                     st.pc.push(range_of(&t, a.ty.elem().unwrap()));
@@ -474,7 +514,10 @@ impl<'a> Gen<'a> {
                 for (k, v) in &st.vars {
                     pre.vars.entry(k.clone()).or_insert_with(|| v.clone());
                 }
-                self.ex(&mut pre, inner, true)
+                self.in_old += 1;
+                let r = self.ex(&mut pre, inner, true);
+                self.in_old -= 1;
+                r
             }
             ExprK::Quant { forall, var, range, body } => {
                 let bounds = match range {
@@ -598,6 +641,7 @@ impl<'a> Gen<'a> {
                 let lo = self.ex(st, &args[1], true);
                 let hi = self.ex(st, &args[2], true);
                 let v = self.ex(st, &args[3], true);
+                self.record(st, an, &lo, Some(&hi), false, true, span);
                 // Facts use fuel zero; obl() gives goals two unfoldings.
                 return Out::Scalar(format!("(kcount K.Z {} {} {} {})", arr, lo, hi, v));
             }
@@ -692,6 +736,9 @@ impl<'a> Gen<'a> {
             }
         }
         self.disjoint(st, &borrowed, span, "in this call");
+        for b in &borrowed {
+            self.record(st, &b.name, &b.lo, Some(&b.hi), b.mutable, arg_spec, span);
+        }
         if let Some(pb) = &mut self.par_borrows {
             pb.extend(borrowed);
         }
@@ -891,6 +938,7 @@ impl<'a> Gen<'a> {
                 // changed the array (C stores into the array as it is then).
                 let a = st.vars[name].clone();
                 self.fit(st, &vv, Ty::Int(a.ty.elem().unwrap()), val.span);
+                self.record(st, name, &iv, None, true, false, s.span);
                 let a2 = self.fresh(name, Ty::Arr, st);
                 st.pc.push(format!("(= {} (store {} {} {}))", a2, a.smt, iv, vv));
                 st.vars.get_mut(name).unwrap().smt = a2;
@@ -1007,6 +1055,99 @@ impl<'a> Gen<'a> {
             StmtK::Expr(e) => {
                 self.ex(st, e, false);
             }
+            StmtK::ParFor { var, lo, hi, ens, body } => self.par_for(st, var, lo, hi, ens, body),
+        }
+    }
+
+    /// A `par for` (docs/par-for.md). The body is verified once for an
+    /// arbitrary iteration i, from the state before the loop. A second
+    /// copy, for another iteration j != i, is run only to collect its array
+    /// accesses: every slot i writes must be one j neither reads nor
+    /// writes, and every slot the ensures reads must be one j does not
+    /// write. Then no iteration observes another, so running them in any
+    /// order or at once gives the same result as running each from the
+    /// state before the loop, and each iteration's ensures still holds at
+    /// the end.
+    fn par_for(&mut self, st: &mut St, var: &str, lo: &Expr, hi: &Expr, ens: &[Expr], body: &Block) {
+        let lov = self.ex(st, lo, false);
+        let hiv = self.ex(st, hi, false);
+        let base = st.pc.len();
+        let range = |x: &str| format!("(and (<= {} {}) (< {} {}))", lov, x, x, hiv);
+        let outer = self.rec.take();
+        // Iteration i: every obligation of the body, then its ensures.
+        let mut a = st.clone();
+        let iv = self.fresh(var, Ty::I64, &mut a);
+        a.pc.push(range(&iv));
+        a.vars.insert(var.to_string(), V { ty: Ty::I64, smt: iv.clone(), len: None });
+        self.dead_check(&a, body, "par for body");
+        self.rec = Some(vec![]);
+        self.block(&mut a, body);
+        self.rec_ens = true;
+        for e in ens {
+            let g = self.ex(&mut a, e, true);
+            self.obl(&a, "V-ENSURES", e.span, g, format!("this par for ensures may not hold after iteration '{}'", var), "make the body establish it for its own iteration; it may only mention that iteration's slots of written arrays");
+        }
+        self.rec_ens = false;
+        let acc_i = self.rec.take().unwrap();
+        // Iteration j: a renamed copy whose own obligations repeat i's.
+        let nobl = self.obls.len();
+        let mut b = st.clone();
+        let jv = self.fresh(var, Ty::I64, &mut b);
+        b.pc.push(range(&jv));
+        b.vars.insert(var.to_string(), V { ty: Ty::I64, smt: jv.clone(), len: None });
+        self.rec = Some(vec![]);
+        self.block(&mut b, body);
+        let acc_j = self.rec.take().unwrap();
+        self.obls.truncate(nobl);
+        self.rec = outer;
+        let mut pair = St::default();
+        pair.vars.insert(var.to_string(), V { ty: Ty::I64, smt: iv.clone(), len: None });
+        pair.vars.insert(format!("{}'", var), V { ty: Ty::I64, smt: jv.clone(), len: None });
+        for x in &acc_i {
+            for y in &acc_j {
+                let what = match (x.kind, y.kind) {
+                    (AKind::Write, AKind::Write) => format!("two iterations of this par for may write the same slot of '{}' (data race; the other write is at line {})", x.name, y.span.line),
+                    (AKind::Write, AKind::Read) => format!("an iteration may write a slot of '{}' that another iteration reads at line {} (data race)", x.name, y.span.line),
+                    (AKind::EnsRead, AKind::Write) => format!("this ensures reads a slot of '{}' that another iteration writes at line {}, so it may not hold once the loop ends", x.name, y.span.line),
+                    _ => continue,
+                };
+                if x.name != y.name {
+                    continue;
+                }
+                pair.pc = x.pc.clone();
+                pair.pc.extend(y.pc[base..].iter().cloned());
+                pair.pc.push(format!("(not (= {} {}))", iv, jv));
+                let goal = match (&x.hi, &y.hi) {
+                    (None, None) => format!("(not (= {} {}))", x.lo, y.lo),
+                    _ => {
+                        let xh = x.hi.clone().unwrap_or_else(|| format!("(+ {} 1)", x.lo));
+                        let yh = y.hi.clone().unwrap_or_else(|| format!("(+ {} 1)", y.lo));
+                        format!("(or (<= {xh} {yl}) (<= {yh} {xl}) (<= {xh} {xl}) (<= {yh} {yl}))", xh = xh, yh = yh, xl = x.lo, yl = y.lo)
+                    }
+                };
+                self.obl(&pair, "V-RACE", x.span, goal, what, "each iteration may write only slots no other iteration touches, e.g. xs[i] or xs[2 * i + 1]; read other slots only of arrays the loop does not write");
+            }
+        }
+        // After the loop: written arrays are known only through the ensures.
+        let mut mods = std::collections::HashSet::new();
+        mods_block(body, &mut mods);
+        let mut names: Vec<String> = mods.into_iter().filter(|m| st.vars.get(m).is_some_and(|v| v.ty.is_array())).collect();
+        names.sort();
+        for m in names {
+            let x = self.fresh(&m, Ty::Arr, st);
+            st.vars.get_mut(&m).unwrap().smt = x;
+        }
+        for e in ens {
+            self.n += 1;
+            let q = format!("q.{}.{}", var, self.n);
+            self.decls.push(format!("(declare-const {} Int)", q));
+            st.vars.insert(var.to_string(), V { ty: Ty::I64, smt: q.clone(), len: None });
+            let r = range(&q);
+            self.quant += 1;
+            let g = self.ex_under(st, &r, e, true);
+            self.quant -= 1;
+            st.vars.remove(var);
+            st.pc.push(format!("(forall (({} Int)) (=> {} {}))", q, r, g));
         }
     }
 
@@ -1063,6 +1204,10 @@ fn mods_expr(e: &Expr, out: &mut std::collections::HashSet<String>) {
     }
 }
 
+pub fn mods_of(b: &Block, out: &mut std::collections::HashSet<String>) {
+    mods_block(b, out)
+}
+
 fn mods_block(b: &Block, out: &mut std::collections::HashSet<String>) {
     for s in b {
         match &s.k {
@@ -1093,6 +1238,7 @@ fn mods_block(b: &Block, out: &mut std::collections::HashSet<String>) {
             }
             StmtK::Return(Some(e)) | StmtK::Expr(e) => mods_expr(e, out),
             StmtK::Par(bs) => bs.iter().for_each(|b| mods_expr(&b.call, out)),
+            StmtK::ParFor { body, .. } => mods_block(body, out),
             _ => {}
         }
     }
@@ -1164,6 +1310,12 @@ fn calls_block(b: &Block, out: &mut Vec<String>) {
                 arms.iter().for_each(|a| calls_block(&a.body, out));
             }
             StmtK::Return(None) => {}
+            StmtK::ParFor { lo, hi, ens, body, .. } => {
+                calls_expr(lo, out);
+                calls_expr(hi, out);
+                ens.iter().for_each(|e| calls_expr(e, out));
+                calls_block(body, out);
+            }
         }
     }
 }
@@ -1254,7 +1406,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func],
     let specs: Vec<&Func> = if axioms { specs.into_iter().filter(|f| only.map_or(true, |o| o.contains(&f.name))).collect() } else { vec![] };
     for f in &specs {
         // An axiom body sits under the axiom's own quantifier.
-        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new(), quant: 1, arr_elem: IntK::I64 };
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new(), quant: 1, arr_elem: IntK::I64, rec: None, rec_ens: false, in_old: 0 };
         let mut st = St::default();
         let mut binders = vec![];
         let mut flat = vec![];
@@ -1287,7 +1439,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func],
 }
 
 fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func) -> (Vec<String>, Vec<Obl>) {
-    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new(), quant: 0, arr_elem: IntK::I64 };
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new(), quant: 0, arr_elem: IntK::I64, rec: None, rec_ens: false, in_old: 0 };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {
@@ -1661,6 +1813,7 @@ fn self_triggering_quantifier(f: &Func) -> Option<(Span, String, String)> {
                 StmtK::If { then, els, .. } => block(then).or_else(|| els.as_ref().and_then(block)),
                 StmtK::Match { arms, .. } => arms.iter().find_map(|a| block(&a.body)),
                 StmtK::Assert(e) => find(e),
+                StmtK::ParFor { ens, body, .. } => ens.iter().find_map(find).or_else(|| block(body)),
                 _ => None,
             };
             if r.is_some() {

@@ -116,7 +116,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "V-DIVZERO" => "The verifier could not prove the divisor is nonzero.",
         "V-BOUNDS" => "The verifier could not prove the index is within 0 <= i < len(xs).",
         "V-REQUIRES" => "The verifier could not prove the callee's `requires` clause at this call site.",
-        "V-ENSURES" => "The verifier could not prove this function's `ensures` clause on this return path.",
+        "V-ENSURES" => "The verifier could not prove this function's `ensures` clause on this return path, or a `par for` ensures after one iteration.",
         "V-INVARIANT-ENTRY" => "The loop invariant does not hold before the first iteration.",
         "V-INVARIANT-KEPT" => "The loop invariant is not preserved by the loop body.",
         "V-TERMINATION" => "The `decreases` measure is not proven to be non-negative and strictly decreasing.",
@@ -128,6 +128,13 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "V-SHIFT" => "A shift amount may be negative or at least 64. In C such a shift is undefined; prove 0 <= amount < 64 with a requires clause or a test.",
         "V-SLICE" => "The verifier could not prove a slice's bounds satisfy 0 <= lo <= hi <= len(array).",
         "V-DISJOINT" => "Two borrows of one array, at least one exclusive, may touch overlapping indices: in one call, or across par branches (a data race). Prove the slice ranges disjoint, e.g. [lo..mid] and [mid..hi].",
+        "E-PARFOR" => "A `par for` body runs once per index, in parallel. It may compute with locals declared inside it, read any array, \
+                       write `&mut` (or owned) arrays, and call fns. It may not assign a variable declared outside it (loop-carried state), print or \
+                       call io fns, allocate, `return`, or contain `par` or another `par for`; nor may any fn it calls, at any depth, allocate, \
+                       recurse or run `par`. These are the rules of a GPU kernel (docs/gpu.md).",
+        "V-RACE" => "Two iterations of a `par for` may touch the same array slot and at least one writes it, or the loop's `ensures` reads a slot \
+                     another iteration writes. Index writes by the loop variable injectively (xs[i], xs[2 * i + 1], out[r * w + c] with 0 <= c < w), \
+                     and read other slots only of arrays the loop does not write. The counterexample names two iterations i and i'.",
         "V-UNKNOWN" => "The solver used up its fixed work budget, or rejected the proof script. Budgets count solver steps, not seconds, so the verdict is the same on every run. A quantifier that reads xs[t] and xs[t + 1] can make the solver instantiate it forever; state such facts pairwise (forall a in lo..hi { forall b in a..hi { .. } }). Otherwise strengthen invariants or split the function. A rejected script is a keel bug.",
         _ => return None,
     })

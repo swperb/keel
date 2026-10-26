@@ -1,0 +1,9 @@
+// expect: V-RACE
+fn f(xs: &mut [i64])
+  requires len(xs) > 0
+  requires forall k in 0..len(xs) { 0 <= xs[k] && xs[k] <= 1000 }
+{
+  par for i in 0..len(xs) - 1 {
+    xs[i] = xs[i + 1] + 1;
+  }
+}

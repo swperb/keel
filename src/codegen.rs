@@ -6,7 +6,8 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
-const RUNTIME: &str = r#"#include <stdint.h>
+const RUNTIME: &str = r#"#define _DEFAULT_SOURCE /* glibc: keep clock_gettime, sysconf, dlopen visible under -std=c11 */
+#include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,116 @@ static void klrt_join(pthread_t t, int spawned) {
 }
 "#;
 
+/// Host side of the GPU path, included only when some `par for` became a
+/// kernel. The CUDA driver is loaded at run time with dlopen, so the program
+/// builds and runs anywhere; without a driver or device every loop runs on
+/// the CPU. KEEL_GPU=0 forces the CPU; KEEL_GPU_TIMING=1 prints per-launch
+/// copy and kernel times.
+const GPU_RUNTIME: &str = r#"#include <dlfcn.h>
+#include <time.h>
+typedef unsigned long long klrt_dev;
+#define KLRT_GPU_MAX ((uint64_t)2147483647 * 256)
+static const char klrt_ptx[];
+static struct {
+    atomic_int state; /* 0 untried, 1 ready, -1 off */
+    void* ctx; void* mod; int timing;
+    int (*Init)(unsigned);
+    int (*DeviceGetCount)(int*);
+    int (*DeviceGet)(int*, int);
+    int (*PrimaryCtxRetain)(void**, int);
+    int (*CtxSetCurrent)(void*);
+    int (*ModuleLoadDataEx)(void**, const void*, unsigned, int*, void**);
+    int (*ModuleGetFunction)(void**, void*, const char*);
+    int (*MemAlloc)(klrt_dev*, size_t);
+    int (*MemFree)(klrt_dev);
+    int (*HtoD)(klrt_dev, const void*, size_t);
+    int (*DtoH)(void*, klrt_dev, size_t);
+    int (*Launch)(void*, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, void*, void**, void**);
+    int (*Sync)(void);
+} klrt_gpu;
+static pthread_mutex_t klrt_gpu_mu = PTHREAD_MUTEX_INITIALIZER;
+static double klrt_now(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
+}
+static void klrt_gpu_setup(void) {
+    const char* want = getenv("KEEL_GPU");
+    if (want && strcmp(want, "0") == 0) return;
+    void* h = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libcuda.so", RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        if (want) fputs("keel: note: KEEL_GPU is set but no CUDA driver was found; par for loops run on the CPU\n", stderr);
+        return;
+    }
+#define KLRT_SYM(f, s) if (!(*(void**)&klrt_gpu.f = dlsym(h, s))) { fputs("keel: note: the CUDA driver is too old; par for loops run on the CPU\n", stderr); return; }
+    KLRT_SYM(Init, "cuInit") KLRT_SYM(DeviceGetCount, "cuDeviceGetCount") KLRT_SYM(DeviceGet, "cuDeviceGet")
+    KLRT_SYM(PrimaryCtxRetain, "cuDevicePrimaryCtxRetain") KLRT_SYM(CtxSetCurrent, "cuCtxSetCurrent")
+    KLRT_SYM(ModuleLoadDataEx, "cuModuleLoadDataEx") KLRT_SYM(ModuleGetFunction, "cuModuleGetFunction")
+    KLRT_SYM(MemAlloc, "cuMemAlloc_v2") KLRT_SYM(MemFree, "cuMemFree_v2") KLRT_SYM(HtoD, "cuMemcpyHtoD_v2")
+    KLRT_SYM(DtoH, "cuMemcpyDtoH_v2") KLRT_SYM(Launch, "cuLaunchKernel") KLRT_SYM(Sync, "cuCtxSynchronize")
+    int n = 0, dev = 0;
+    if (klrt_gpu.Init(0) || klrt_gpu.DeviceGetCount(&n) || n < 1 || klrt_gpu.DeviceGet(&dev, 0)
+        || klrt_gpu.PrimaryCtxRetain(&klrt_gpu.ctx, dev) || klrt_gpu.CtxSetCurrent(klrt_gpu.ctx)) {
+        if (want) fputs("keel: note: no usable CUDA device; par for loops run on the CPU\n", stderr);
+        return;
+    }
+    static char log[16384];
+    int opts[2] = { 5, 6 }; /* CU_JIT_ERROR_LOG_BUFFER, CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES */
+    void* vals[2] = { log, (void*)(size_t)sizeof log };
+    if (klrt_gpu.ModuleLoadDataEx(&klrt_gpu.mod, klrt_ptx, 2, opts, vals)) {
+        fprintf(stderr, "keel: note: the CUDA driver rejected keel's kernels (a keel bug); par for loops run on the CPU\n%s\n", log);
+        return;
+    }
+    klrt_gpu.timing = getenv("KEEL_GPU_TIMING") != NULL;
+    atomic_store(&klrt_gpu.state, 1);
+}
+static int klrt_gpu_init(void) {
+    int s = atomic_load(&klrt_gpu.state);
+    if (s == 0) {
+        pthread_mutex_lock(&klrt_gpu_mu);
+        if (atomic_load(&klrt_gpu.state) == 0) {
+            klrt_gpu_setup();
+            if (atomic_load(&klrt_gpu.state) == 0) atomic_store(&klrt_gpu.state, -1);
+        }
+        pthread_mutex_unlock(&klrt_gpu_mu);
+        s = atomic_load(&klrt_gpu.state);
+    }
+    /* The context must be current on whichever thread launches. */
+    return s > 0 && !klrt_gpu.CtxSetCurrent(klrt_gpu.ctx);
+}
+static int klrt_gpu_fn(void** fn, const char* name) {
+    pthread_mutex_lock(&klrt_gpu_mu);
+    if (!*fn && klrt_gpu.ModuleGetFunction(fn, klrt_gpu.mod, name)) *fn = NULL;
+    pthread_mutex_unlock(&klrt_gpu_mu);
+    return *fn != NULL;
+}
+static int klrt_gpu_put(klrt_dev* d, const void* p, size_t n) {
+    if (klrt_gpu.MemAlloc(d, n ? n : 1)) { *d = 0; return 0; }
+    return n == 0 || !klrt_gpu.HtoD(*d, p, n);
+}
+static int klrt_gpu_launch(void* fn, uint64_t n, void** args) {
+    unsigned b = 256;
+    if (!klrt_gpu.Launch(fn, (unsigned)((n + b - 1) / b), 1, 1, b, 1, 1, 0, NULL, args, NULL) && !klrt_gpu.Sync()) return 1;
+    /* A failed launch can leave the context unusable: stop using the GPU. */
+    if (atomic_exchange(&klrt_gpu.state, -1) > 0) fputs("keel: note: a GPU kernel failed (a keel bug); par for loops run on the CPU\n", stderr);
+    return 0;
+}
+/* After a launch succeeded the host arrays may no longer be rerun on the
+   CPU (an in-place update would apply twice), so a failed copy is fatal. */
+static void klrt_gpu_get(void* p, klrt_dev d, size_t n) {
+    if (n && klrt_gpu.DtoH(p, d, n)) { fputs("keel: copying a result back from the GPU failed\n", stderr); exit(70); }
+}
+static void klrt_gpu_free(klrt_dev d) {
+    if (d) klrt_gpu.MemFree(d);
+}
+static void klrt_gpu_report(const char* k, uint64_t n, int ok, double t0, double t1, double t2, double t3) {
+    if (klrt_gpu.timing)
+        fprintf(stderr, "keel: gpu %s n=%llu %s: copy in %.2f ms, kernel %.2f ms, copy out %.2f ms\n", k, (unsigned long long)n,
+                ok ? "ok" : "FAILED (ran on the CPU)", (t1 - t0) * 1e3, (t2 - t1) * 1e3, (t3 - t2) * 1e3);
+}
+"#;
+
 struct Cg<'a> {
     prog: &'a Program,
     funcs: HashMap<&'a str, &'a Func>,
@@ -72,6 +183,12 @@ struct Cg<'a> {
     cur_ret: Ty,
     /// Element type of the array an `array(n, fill)` call is bound to.
     arr_elem: IntK,
+    /// Types of the variables in scope, per lexical scope.
+    tys: Vec<HashMap<String, Ty>>,
+    /// GPU kernels compiled from `par for` bodies.
+    kernels: Vec<crate::ptx::Kernel>,
+    /// Why some `par for` loops stay on the CPU.
+    notes: Vec<String>,
 }
 
 /// Suffix naming the C array struct and allocator for an element type.
@@ -286,6 +403,7 @@ impl<'a> Cg<'a> {
 
     fn block(&mut self, b: &Block) {
         self.owned.push(vec![]);
+        self.tys.push(HashMap::new());
         for s in b {
             self.stmt(s);
         }
@@ -295,11 +413,17 @@ impl<'a> Cg<'a> {
             self.free_scopes(top, None);
         }
         self.owned.pop();
+        self.tys.pop();
+    }
+
+    fn declare(&mut self, name: &str, ty: Ty) {
+        self.tys.last_mut().unwrap().insert(name.to_string(), ty);
     }
 
     fn stmt(&mut self, s: &Stmt) {
         match &s.k {
             StmtK::Let { name, ty, init, .. } => {
+                self.declare(name, *ty);
                 if let Ty::ArrOf(k) = *ty {
                     self.arr_elem = k;
                     let v = self.ex(init);
@@ -329,6 +453,7 @@ impl<'a> Cg<'a> {
                     self.line(&format!("case {}: {{", i));
                     self.ind += 1;
                     if let Some(b) = &a.binder {
+                        self.declare(b, Ty::Payload(*enum_id, i as u32));
                         self.line(&format!("{} k_{} = m{}.u.{};", cty(Ty::Payload(*enum_id, i as u32)), b, t, a.variant));
                     }
                     self.block(&a.body);
@@ -400,6 +525,43 @@ impl<'a> Cg<'a> {
                 self.line(&format!("{};", v));
             }
             StmtK::Par(branches) => self.par(branches),
+            StmtK::ParFor { var, lo, hi, body, .. } => {
+                // The verifier proved no iteration touches a slot another
+                // writes, and the body assigns only its own locals, so every
+                // outer variable is safely shared. Without OpenMP the pragma
+                // is ignored and the loop runs serially, with the same result.
+                let (l, h) = (self.ex(lo), self.ex(hi));
+                self.tmp += 1;
+                let t = self.tmp;
+                self.line(&format!("const int64_t lo{0} = {1}, hi{0} = {2};", t, l, h));
+                // On a GPU when one is present; the CPU loop otherwise.
+                let outer: HashMap<String, Ty> = self.tys.iter().flat_map(|m| m.iter().map(|(k, v)| (k.clone(), *v))).collect();
+                let gpu = match crate::ptx::kernel(self.prog, &self.funcs, t, var, body, &outer) {
+                    Ok(k) => {
+                        let call = self.launcher(&k, t);
+                        self.kernels.push(k);
+                        Some(call)
+                    }
+                    Err(why) => {
+                        self.notes.push(format!("par for at line {}:{} runs on the CPU only: its body {}", s.span.line, s.span.col, why));
+                        None
+                    }
+                };
+                if let Some(call) = &gpu {
+                    self.line(&format!("if (!{}) {{", call));
+                    self.ind += 1;
+                }
+                self.line("#pragma omp parallel for schedule(static)");
+                self.line(&format!("for (int64_t k_{1} = lo{0}; k_{1} < hi{0}; k_{1}++) {{", t, var));
+                self.ind += 1;
+                self.block(body);
+                self.ind -= 1;
+                self.line("}");
+                if gpu.is_some() {
+                    self.ind -= 1;
+                    self.line("}");
+                }
+            }
         }
     }
 
@@ -462,22 +624,72 @@ impl<'a> Cg<'a> {
         for (bi, b) in branches.iter().enumerate() {
             if let Some(n) = &b.name {
                 self.line(&format!("{} k_{} = p{}_{}.r;", cty(b.ty), n, id, bi));
+                self.declare(n, b.ty);
             }
         }
     }
 }
 
-pub fn emit(prog: &Program) -> String {
+impl<'a> Cg<'a> {
+    /// A host function that runs kernel `k` on the GPU: copy every array it
+    /// uses to the device, launch one thread per iteration, copy written
+    /// arrays back. It returns 0, having changed nothing, when there is no
+    /// usable GPU; the caller then runs the CPU loop. Returns the call.
+    fn launcher(&mut self, k: &crate::ptx::Kernel, t: usize) -> String {
+        let mut ps = vec!["int64_t lo".to_string(), "int64_t hi".to_string()];
+        let mut call = vec![format!("lo{}", t), format!("hi{}", t)];
+        let mut args = vec!["&lo".to_string(), "&n".to_string()];
+        for sname in &k.scalars {
+            ps.push(format!("int64_t s_{}", sname));
+            call.push(format!("(int64_t)k_{}", sname));
+            args.push(format!("&s_{}", sname));
+        }
+        let mut body = String::new();
+        let (mut puts, mut gets) = (vec![], vec![]);
+        for (j, (a, elem, w)) in k.arrays.iter().enumerate() {
+            ps.push(format!("{}{}* a_{}, int64_t a_{}_len", if *w { "" } else { "const " }, elem.cname(), a, a));
+            call.push(format!("k_{}, k_{}_len", a, a));
+            args.push(format!("&d[{}]", j));
+            args.push(format!("&a_{}_len", a));
+            let bytes = format!("(size_t)a_{}_len * sizeof({})", a, elem.cname());
+            puts.push(format!("    ok = ok && klrt_gpu_put(&d[{}], a_{}, {});\n", j, a, bytes));
+            if *w {
+                gets.push(format!("    if (ok) klrt_gpu_get(a_{}, d[{}], {});\n", a, j, bytes));
+            }
+        }
+        let nd = k.arrays.len().max(1);
+        body += &format!("static int klrt_{}({}) {{\n", k.name, ps.join(", "));
+        body += "    if (hi <= lo || !klrt_gpu_init()) return 0;\n";
+        body += "    uint64_t n = (uint64_t)hi - (uint64_t)lo;\n";
+        body += &format!("    static void* fn;\n    if (n > KLRT_GPU_MAX || !klrt_gpu_fn(&fn, \"{}\")) return 0;\n", k.name);
+        body += &format!("    klrt_dev d[{}] = {{0}};\n    int ok = 1;\n    double t0 = klrt_now();\n", nd);
+        body += &puts.concat();
+        body += &format!("    double t1 = klrt_now();\n    void* args[] = {{ {} }};\n    ok = ok && klrt_gpu_launch(fn, n, args);\n    double t2 = klrt_now();\n", args.join(", "));
+        body += &gets.concat();
+        body += &format!("    for (int j = 0; j < {}; j++) klrt_gpu_free(d[j]);\n", nd);
+        body += &format!("    klrt_gpu_report(\"{}\", n, ok, t0, t1, t2, klrt_now());\n    return ok;\n}}\n", k.name);
+        self.thunks += &body;
+        format!("klrt_{}({})", k.name, call.join(", "))
+    }
+}
+
+/// C string literal holding `text`, one source line per line of text.
+fn c_string(text: &str) -> String {
+    text.lines().map(|l| format!("\"{}\\n\"\n", l.replace('\\', "\\\\").replace('"', "\\\""))).collect()
+}
+
+pub fn emit(prog: &Program) -> (String, Vec<String>) {
     let all = &prog.funcs;
     // Spec fns and lemmas are mathematics: nothing to emit.
     let funcs: Vec<&Func> = all.iter().filter(|f| f.kind == FnKind::Code).collect();
-    let mut cg = Cg { prog, funcs: all.iter().map(|f| (f.name.as_str(), f)).collect(), out: String::new(), thunks: String::new(), ind: 0, tmp: 0, owned: vec![], cur_ret: Ty::Unit, arr_elem: IntK::I64 };
+    let mut cg = Cg { prog, funcs: all.iter().map(|f| (f.name.as_str(), f)).collect(), out: String::new(), thunks: String::new(), ind: 0, tmp: 0, owned: vec![], cur_ret: Ty::Unit, arr_elem: IntK::I64, tys: vec![], kernels: vec![], notes: vec![] };
     let mut protos = String::new();
     for f in &funcs {
         protos += &format!("static {} kl_{}({});\n", cty(f.ret), f.name, params_c(f));
     }
     for f in &funcs {
         cg.cur_ret = f.ret;
+        cg.tys = vec![f.params.iter().map(|p| (p.name.clone(), p.ty)).collect()];
         cg.out += &format!("static {} kl_{}({}) {{\n", cty(f.ret), f.name, params_c(f));
         cg.ind = 1;
         cg.block(&f.body);
@@ -489,11 +701,17 @@ pub fn emit(prog: &Program) -> String {
     c += "\n";
     c += &protos;
     c += "\n";
+    if !cg.kernels.is_empty() {
+        c += GPU_RUNTIME;
+        c += "static const char klrt_ptx[] =\n";
+        c += &c_string(&crate::ptx::module(prog, &cg.funcs, &cg.kernels));
+        c += ";\n\n";
+    }
     c += &cg.thunks;
     c += "\n";
     c += &cg.out;
     if funcs.iter().any(|f| f.name == "main") {
         c += "int main(void) {\n    klrt_rt_init();\n    kl_main();\n    return 0;\n}\n";
     }
-    c
+    (c, cg.notes)
 }

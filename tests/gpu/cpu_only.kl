@@ -1,0 +1,28 @@
+// A par for whose body uses a struct stays on the CPU (keel build notes
+// why); the other loop still becomes a GPU kernel. Output is the same
+// either way.
+struct Scale { mul: i64, add: i64 }
+
+fn apply(out: &mut [i64], s: Scale)
+  requires len(out) <= 1000000 && 0 <= s.mul && s.mul <= 1000 && 0 <= s.add && s.add <= 1000
+{
+  par for i in 0..len(out) {
+    out[i] = (i * s.mul) + s.add;
+  }
+}
+
+fn twice(out: &mut [i64])
+  requires len(out) <= 1000000
+{
+  par for i in 0..len(out) {
+    out[i] = 2 * i;
+  }
+}
+
+io fn main() {
+  let xs: [i64] = array(1000, 0);
+  apply(&mut xs, Scale { mul: 3, add: 4 });
+  print(xs[999]);
+  twice(&mut xs);
+  print(xs[999]);
+}

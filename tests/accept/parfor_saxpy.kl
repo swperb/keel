@@ -1,0 +1,13 @@
+// Integer saxpy in place: ys[i] reads its own old value, which no other
+// iteration writes. old(..) is the state on entry.
+fn saxpy(a: i64, xs: &[i32], ys: &mut [i64])
+  requires len(ys) == len(xs) && -1000 <= a && a <= 1000
+  requires forall k in 0..len(ys) { -1000000000 <= ys[k] && ys[k] <= 1000000000 }
+  ensures forall k in 0..len(ys) { ys[k] == (a * xs[k]) + old(ys[k]) }
+{
+  par for i in 0..len(ys)
+    ensures ys[i] == (a * xs[i]) + old(ys[i])
+  {
+    ys[i] = (a * xs[i]) + ys[i];
+  }
+}
