@@ -18,8 +18,9 @@ property is proven up front, the generated code has no runtime checks at all.
   all six exact specifications in round 2 (18 of 18). Their Rust solutions
   passed the same hidden tests while carrying no machine-checked facts
   ([evals](evals/README.md)).
-- **Deterministic.** Every check gets a fixed budget of solver work, so the
-  same file gets the same verdict on every run and machine.
+- **Deterministic.** Every check gets a fixed budget of solver work, so with
+  the same Z3 version the same file gets the same verdict on every run and
+  machine.
 
 > **Can you break it?** If you get a program past `keel check` that overflows,
 > indexes out of bounds, races or loops forever, that is the most valuable bug
@@ -28,12 +29,26 @@ property is proven up front, the generated code has no runtime checks at all.
 
 ## Install
 
+Prebuilt binaries for macOS (Apple Silicon, Intel) and Linux (x86_64, arm64)
+are on the [releases page](https://github.com/swperb/keel/releases/latest).
+For example, on an Apple Silicon Mac:
+
+```
+curl -sSL https://github.com/swperb/keel/releases/download/v0.1.0/keel-v0.1.0-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv keel-v0.1.0-aarch64-apple-darwin/keel /usr/local/bin/
+```
+
+Or build from source with Cargo:
+
 ```
 cargo install --git https://github.com/swperb/keel
 ```
 
-Keel needs [Z3](https://github.com/Z3Prover/z3) on `PATH` (`brew install z3`
-or `apt install z3`) and a C compiler (`cc`, or set `CC`). Then:
+Keel needs [Z3](https://github.com/Z3Prover/z3) on `PATH` and a C compiler
+(`cc`, or set `CC`). Keel is tested with Z3 5.3.2: `brew install z3`, or a
+binary from [Z3's releases](https://github.com/Z3Prover/z3/releases). Older
+distribution packages (Ubuntu 24.04 ships 4.8.12) are too slow for some
+proofs. Then:
 
 ```
 keel check file.kl    # prove
@@ -220,7 +235,9 @@ example verifies in 0.01 to 1 s.
 
 Verification is deterministic: every check gets a fixed budget of solver
 work (Z3's resource counter), never a wall-clock timeout, so the same file
-gets the same verdict on every run and every machine load. Reachability
+gets the same verdict on every run and every machine load. Budgets are
+counted in one Z3 version's units, so pin the version (CI uses 5.3.2): an
+older or newer solver may settle a borderline proof differently. Reachability
 checks get a small budget, and any the solver cannot settle are reported as
 inconclusive rather than silently passed. When a proof runs out of budget
 in a function with a self-triggering quantifier such as
