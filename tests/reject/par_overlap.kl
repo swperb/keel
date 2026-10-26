@@ -1,0 +1,13 @@
+// expect: V-DISJOINT
+fn bump(xs: &mut [i64]) {
+}
+
+fn f(xs: &mut [i64])
+  requires len(xs) >= 4
+{
+  let mid: i64 = len(xs) / 2;
+  par {
+    bump(&mut xs[0..mid + 1]);
+    bump(&mut xs[mid..len(xs)]);
+  }
+}

@@ -45,12 +45,26 @@ entire class of misreadings, for models and people alike.
 
 ## Compared to Bend
 
-Bend parallelizes everything implicitly via interaction nets, which is
-beautiful but slow per core and dynamically typed. Keel takes the opposite
-trade: parallelism is explicit (`par`), but it is **statically race-free**
-(an `&mut` borrow in one branch may not appear in another) and runs at native
-C speed. The spawner only forks while a core is free, so recursion does not
-explode into thousands of threads.
+Bend (bend-lang.com, v2.0.39 at the time of writing) describes itself as
+having a proof-checking type checker in the style of Lean and Rocq, built on
+an affine dependent type theory, near-C speed on one core, and automatic
+parallelism across CPU cores and GPUs. We have not benchmarked Bend
+ourselves, so this section only makes claims about Keel that we measured or
+that the compiler enforces:
+
+- **Explicit, statically race-free parallelism.** `par` branches run on free
+  cores. Branches may share an array only through slices the verifier proves
+  disjoint (`V-DISJOINT`), so divide and conquer over arrays needs no unsafe
+  code or locks. The spawner forks only while a core is free.
+- **Automated proofs with counterexamples.** Overflow, bounds, division by
+  zero, contracts and termination are discharged by an SMT solver without
+  hand-written proof terms; when a proof fails, the error carries concrete
+  input values. Hand-written `lemma`s cover what the solver cannot find.
+- **Anti-vacuity checks.** Contradictory preconditions (`V-VACUOUS`) and
+  unreachable branches (`V-DEAD`) are errors, so a proof cannot pass by
+  assuming the impossible.
+- **Measured speed against Rust,** below. Keel compiles to check-free C, so
+  single-core speed is C speed for the same algorithm.
 
 ```
 par {
@@ -67,6 +81,28 @@ On a 15-core M-series Mac, counting primes below 20M (`examples/primes.kl`):
 | Rust, serial | 2.72 s | 2.50 s |
 | Rust, scoped threads | 0.20 s | 2.87 s |
 | Keel, `par` | 0.23 s | 2.85 s |
+
+Parallel mergesort of 10M integers (`examples/msort.kl`), with sortedness,
+bounds, termination and race freedom all proven:
+
+```
+par {
+  msort(&mut xs[0..mid], &mut tmp[0..mid]);
+  msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
+}
+merge(&mut xs, &mut tmp, mid);
+```
+
+| same algorithm, 4096 cutoff | wall | CPU |
+|---|---|---|
+| Rust, `std::thread::scope` per split | 0.19 to 0.34 s | 1.2 s |
+| Rust, `rayon::join` | 0.12 s | 0.75 s |
+| Keel, `par` | 0.12 s | 0.72 s |
+
+Keel matches rayon's work-stealing on the same algorithm and beats naive
+threads. A better algorithm still wins: rayon's `par_sort_unstable` does it
+in 0.04 s and single-threaded `sort_unstable` in 0.11 s. A tuned sort in
+Keel's standard library is future work.
 
 ## Usage
 
@@ -147,6 +183,8 @@ silently passed.
 - Ghost code: `spec fn` (single-expression math definitions, spec-only `if c { a } else { b }`), `lemma` (no loops; prove by cases, `assert` and recursion).
 - Statements: `let`, `var`, assignment, `xs[i] = v`, `if`/`else`, `while ... invariant ... decreases ...`, `return`, `assert`, `par`.
 - Specs: `forall x in lo..hi { P }`, `exists`, `==>`, `len(xs)`.
+- Slices: `&xs[lo..hi]` and `&mut xs[lo..hi]` borrow a range; the callee sees an array of length `hi - lo`. Two borrows of one array may coexist in a call or across `par` branches only if both are slices and the verifier proves the ranges disjoint.
+- `par` branches are calls: `let x: i64 = f(..);` or, for unit functions, `f(..);`.
 - Memory: arrays come from `array(n, fill)` or functions returning `[i64]`, are owned by one `let`, are borrowed only at call sites (so there are no lifetimes to annotate), and are freed when their scope ends unless returned.
 
 ## How verification works
@@ -158,7 +196,11 @@ that the measure decreases. Calls are modular: prove the callee's `requires`,
 assume its `ensures`. Integer semantics match C exactly (truncating division),
 and because overflow is proven impossible, mathematical integers in the solver
 equal machine integers in the binary. Each function's obligations go to its
-own Z3 process, all in parallel.
+own Z3 process, all in parallel. Any obligation the solver gives up on is
+retried without quantified facts and array lambdas: dropping assumptions is
+sound for proving, so an "unsat" there counts as proved, while a model found
+there is reported as a counterexample marked possibly spurious, which is
+still more useful to an agent than "solver gave up".
 
 ## Status and roadmap
 
@@ -170,7 +212,7 @@ verifier and the C compiler (Lean's is a small proof kernel).
 
 Next, roughly in order:
 1. Sized integers (`u8`..`u64`, `i32`), arrays of any element type, recursive types.
-2. Disjoint `&mut` slices (`split(&mut xs, mid)`) so `par` covers array divide and conquer (parallel mergesort).
+2. Multiset and permutation reasoning, so sorts can be proven to keep their elements (mergesort today proves sortedness only), and a tuned standard library sort.
 3. `old(...)` in ensures, and cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
 4. `keel fmt` as the single canonical layout, and a proof cache keyed by function hash for fast agent iteration.
 5. Proven stack bounds, arena regions, and an LLVM backend.

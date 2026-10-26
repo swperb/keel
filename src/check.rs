@@ -334,11 +334,9 @@ impl<'a> Checker<'a> {
         }
         let params = sig.params.clone();
         let ret = sig.ret;
-        let mut shared: Vec<String> = vec![];
-        let mut excl: Vec<String> = vec![];
         for (a, pt) in args.iter().zip(params) {
             if pt.is_array() {
-                let ExprK::Borrow { name: an, mutable } = &a.k else {
+                let ExprK::Borrow { name: an, mutable, range } = &a.k else {
                     self.err(Diag::new("E-BORROW", a.span, format!("expected {} here, write '{}name'", pt.name(), if pt == Ty::RefMut { "&mut " } else { "&" })));
                     continue;
                 };
@@ -346,35 +344,47 @@ impl<'a> Checker<'a> {
                 if *mutable != (pt == Ty::RefMut) {
                     self.err(Diag::new("E-BORROW", a.span, format!("parameter expects {}", pt.name())));
                 }
-                if *mutable {
-                    if !(l.ty == Ty::Arr || l.ty == Ty::RefMut) {
-                        self.err(Diag::new("E-BORROW", a.span, format!("cannot borrow '{}' as &mut: it is {}", an, l.ty.name())));
+                if *mutable && !(l.ty == Ty::Arr || l.ty == Ty::RefMut) {
+                    self.err(Diag::new("E-BORROW", a.span, format!("cannot borrow '{}' as &mut: it is {}", an, l.ty.name())));
+                }
+                if let Some((lo, hi)) = range {
+                    for b in [lo, hi] {
+                        let t = self.expr(b, ctx, false);
+                        self.want(t, Ty::I64, b.span, "slice bound");
                     }
-                    excl.push(an.clone());
-                } else {
-                    shared.push(an.clone());
                 }
             } else {
                 let t = self.expr(a, ctx, false);
                 self.want(t, pt, a.span, "argument");
             }
         }
-        for (i, x) in excl.iter().enumerate() {
-            if shared.contains(x) || excl[i + 1..].contains(x) {
-                self.err(Diag::new("E-BORROW", span, format!("'{}' is borrowed &mut while also borrowed elsewhere in this call", x)));
-            }
-        }
+        let items: Vec<(String, bool, bool, usize)> = Self::borrows_of(args).into_iter().enumerate().map(|(i, (n, m, sl))| (n, m, sl, i)).collect();
+        self.conflicts(&items, span, "in this call");
         ret
     }
 
-    fn borrows_of(e: &Expr, out_s: &mut Vec<String>, out_m: &mut Vec<String>) {
-        if let ExprK::Call(_, args) = &e.k {
-            for a in args {
-                match &a.k {
-                    ExprK::Borrow { name, mutable: true } => out_m.push(name.clone()),
-                    ExprK::Borrow { name, mutable: false } => out_s.push(name.clone()),
-                    ExprK::Index(name, _) => out_s.push(name.clone()),
-                    _ => {}
+    /// Array uses by call arguments: (name, exclusive, is_slice).
+    fn borrows_of(args: &[Expr]) -> Vec<(String, bool, bool)> {
+        let mut out = vec![];
+        for a in args {
+            match &a.k {
+                ExprK::Borrow { name, mutable, range } => out.push((name.clone(), *mutable, range.is_some())),
+                ExprK::Index(name, _) => out.push((name.clone(), false, false)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Two uses of one array conflict when either is exclusive, unless both
+    /// are slices; slice pairs are left to the verifier to prove disjoint.
+    fn conflicts(&mut self, items: &[(String, bool, bool, usize)], span: Span, place: &str) {
+        for i in 0..items.len() {
+            for j in i + 1..items.len() {
+                let (a, b) = (&items[i], &items[j]);
+                if a.0 == b.0 && a.3 != b.3 && (a.1 || b.1) && !(a.2 && b.2) {
+                    self.err(Diag::new("E-BORROW", span, format!("'{}' is borrowed &mut and also used elsewhere {} (data race)", a.0, place))
+                        .hint("borrow disjoint slices instead, e.g. &mut xs[0..mid] and &mut xs[mid..len(xs)]"));
                 }
             }
         }
@@ -556,37 +566,29 @@ impl<'a> Checker<'a> {
                 if self.ghost_forbid(s, "par") {
                     return;
                 }
-                let mut sets = vec![];
-                for b in branches {
+                let mut items: Vec<(String, bool, bool, usize)> = vec![];
+                for (bi, b) in branches.iter().enumerate() {
                     let ExprK::Call(fname, _) = &b.call.k else {
                         self.err(Diag::new("E-PARSE", b.span, "each 'par' branch must be a single function call"));
                         continue;
                     };
-                    if matches!(b.ty, Ty::Arr | Ty::Ref | Ty::RefMut | Ty::Unit) {
-                        self.err(Diag::new("E-TYPE", b.span, "par branches return a scalar, struct or enum in v0"));
+                    if matches!(b.ty, Ty::Arr | Ty::Ref | Ty::RefMut) {
+                        self.err(Diag::new("E-TYPE", b.span, "par branches return unit, a scalar, a struct or an enum"));
                     }
                     if fname == "print" || self.sigs.get(fname).map(|s| s.io).unwrap_or(false) {
                         self.err(Diag::new("E-EFFECT", b.span, "par branches must be pure (not io)"));
                     }
                     let t = self.expr(&b.call, Ctx::Code, false);
-                    self.want(t, b.ty, b.call.span, &format!("par branch '{}'", b.name));
-                    let (mut sh, mut mu) = (vec![], vec![]);
-                    Self::borrows_of(&b.call, &mut sh, &mut mu);
-                    sets.push((sh, mu));
-                }
-                for (i, (_, mu)) in sets.iter().enumerate() {
-                    for (j, (sh2, mu2)) in sets.iter().enumerate() {
-                        if i != j {
-                            for x in mu {
-                                if sh2.contains(x) || mu2.contains(x) {
-                                    self.err(Diag::new("E-BORROW", s.span, format!("'{}' is borrowed &mut in one par branch and used in another (data race)", x)));
-                                }
-                            }
-                        }
+                    self.want(t, b.ty, b.call.span, &format!("par branch '{}'", b.name.as_deref().unwrap_or(fname)));
+                    if let ExprK::Call(_, args) = &b.call.k {
+                        items.extend(Self::borrows_of(args).into_iter().map(|(n, m, sl)| (n, m, sl, bi)));
                     }
                 }
+                self.conflicts(&items, s.span, "in another par branch");
                 for b in branches {
-                    self.declare(&b.name, Local { ty: b.ty, mutable: false }, b.span);
+                    if let Some(n) = &b.name {
+                        self.declare(n, Local { ty: b.ty, mutable: false }, b.span);
+                    }
                 }
             }
         }

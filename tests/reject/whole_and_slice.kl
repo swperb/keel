@@ -1,0 +1,9 @@
+// expect: E-BORROW
+fn two(a: &mut [i64], b: &mut [i64]) {
+}
+
+fn f(xs: &mut [i64])
+  requires len(xs) >= 2
+{
+  two(&mut xs, &mut xs[0..1]);
+}

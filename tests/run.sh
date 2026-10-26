@@ -14,6 +14,7 @@ expect_run search "999999 -1 "
 expect_run primes "1270607 "
 expect_run shapes "7 100 12 0 "
 expect_run proofs "3000 "
+expect_run msort "311 1074053543 2147483573 "
 for f in examples/bad.kl examples/cheat.kl tests/reject/*.kl; do
   want=$(head -1 "$f" | sed -n 's#^// expect: ##p')
   out=$($K check "$f" 2>&1)

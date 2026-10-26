@@ -146,7 +146,8 @@ pub type Block = Vec<Stmt>;
 
 #[derive(Clone, Debug)]
 pub struct ParBranch {
-    pub name: String,
+    /// None for a unit call branch (`f(..);`).
+    pub name: Option<String>,
     pub ty: Ty,
     pub call: Expr,
     pub span: Span,
@@ -238,7 +239,8 @@ pub enum ExprK {
     Unary(UOp, Box<Expr>),
     Binary(BOp, Box<Expr>, Box<Expr>),
     Quant { forall: bool, var: String, lo: Box<Expr>, hi: Box<Expr>, body: Box<Expr> },
-    Borrow { name: String, mutable: bool },
+    /// `&xs`, `&mut xs`, or a slice `&xs[lo..hi]` / `&mut xs[lo..hi]`.
+    Borrow { name: String, mutable: bool, range: Option<(Box<Expr>, Box<Expr>)> },
     /// `Point { x: 1, y: 2 }` or `Shape.Circle { r: 5 }` or `Shape.Empty`.
     Lit { ty: u32, variant: Option<String>, fields: Vec<(String, Expr)> },
     Field(Box<Expr>, String),

@@ -395,11 +395,16 @@ impl Parser {
                 let mut branches = vec![];
                 while !self.is_p("}") {
                     let bs = self.span();
-                    self.expect_kw("let")?;
-                    let name = self.ident()?;
-                    self.expect_p(":")?;
-                    let ty = self.ty()?;
-                    self.expect_p("=")?;
+                    let (name, ty) = if self.is_kw("let") {
+                        self.bump();
+                        let name = self.ident()?;
+                        self.expect_p(":")?;
+                        let ty = self.ty()?;
+                        self.expect_p("=")?;
+                        (Some(name), ty)
+                    } else {
+                        (None, Ty::Unit)
+                    };
                     let call = self.expr()?;
                     self.expect_p(";")?;
                     branches.push(ParBranch { name, ty, call, span: bs });
@@ -667,7 +672,18 @@ impl Parser {
                 } else {
                     false
                 };
-                ExprK::Borrow { name: self.ident()?, mutable }
+                let name = self.ident()?;
+                let range = if self.is_p("[") {
+                    self.bump();
+                    let lo = self.arith()?;
+                    self.expect_p("..")?;
+                    let hi = self.arith()?;
+                    self.expect_p("]")?;
+                    Some((Box::new(lo), Box::new(hi)))
+                } else {
+                    None
+                };
+                ExprK::Borrow { name, mutable, range }
             }
             Tok::Kw(q @ ("forall" | "exists")) => {
                 let var = self.ident()?;

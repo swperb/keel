@@ -190,14 +190,27 @@ impl<'a> Cg<'a> {
         let mut v = vec![];
         for a in args {
             match &a.k {
-                ExprK::Borrow { name, .. } => {
-                    v.push(format!("k_{}", name));
-                    v.push(format!("k_{}_len", name));
+                ExprK::Borrow { .. } => {
+                    let (p, l) = self.borrow(a);
+                    v.push(p);
+                    v.push(l);
                 }
                 _ => v.push(self.ex(a)),
             }
         }
         v
+    }
+
+    /// C pointer and length for a borrow; a slice is pointer arithmetic.
+    fn borrow(&mut self, a: &Expr) -> (String, String) {
+        let ExprK::Borrow { name, range, .. } = &a.k else { unreachable!() };
+        match range {
+            None => (format!("k_{}", name), format!("k_{}_len", name)),
+            Some((lo, hi)) => {
+                let (l, h) = (self.ex(lo), self.ex(hi));
+                (format!("(k_{} + {})", name, l), format!("({} - {})", h, l))
+            }
+        }
     }
 
     fn call(&mut self, name: &str, args: &[Expr]) -> String {
@@ -354,11 +367,11 @@ impl<'a> Cg<'a> {
             for (ai, (a, p)) in args.iter().zip(&g.params).enumerate() {
                 match p.ty {
                     Ty::Ref | Ty::RefMut => {
-                        let ExprK::Borrow { name, .. } = &a.k else { unreachable!() };
                         let q = if p.ty == Ty::Ref { "const " } else { "" };
                         fields.push(format!("{}int64_t* a{}; int64_t a{}l;", q, ai, ai));
-                        inits.push(format!("k_{}", name));
-                        inits.push(format!("k_{}_len", name));
+                        let (ptr, len) = self.borrow(a);
+                        inits.push(ptr);
+                        inits.push(len);
                         call_args.push(format!("s->a{0}, s->a{0}l", ai));
                     }
                     t => {
@@ -368,14 +381,20 @@ impl<'a> Cg<'a> {
                     }
                 }
             }
+            let (rfield, assign) = if b.ty == Ty::Unit { (String::new(), "") } else { (format!("{} r;", cty(b.ty)), "s->r = ") };
+            if fields.is_empty() && rfield.is_empty() {
+                fields.push("char unused;".into());
+                inits.push("0".into());
+            }
             self.thunks += &format!(
-                "typedef struct {{ {} {} r; }} {};\nstatic void* {}_run(void* p) {{ {}* s = ({}*)p; s->r = kl_{}({}); return NULL; }}\n",
+                "typedef struct {{ {} {} }} {};\nstatic void* {}_run(void* p) {{ {}* s = ({}*)p; (void)s; {}kl_{}({}); return NULL; }}\n",
                 fields.join(" "),
-                cty(b.ty),
+                rfield,
                 sname,
                 sname,
                 sname,
                 sname,
+                assign,
                 fname,
                 call_args.join(", ")
             );
@@ -391,7 +410,9 @@ impl<'a> Cg<'a> {
             self.line(&format!("kl_join(th{0}_{1}, sp{0}_{1});", id, bi));
         }
         for (bi, b) in branches.iter().enumerate() {
-            self.line(&format!("{} k_{} = p{}_{}.r;", cty(b.ty), b.name, id, bi));
+            if let Some(n) = &b.name {
+                self.line(&format!("{} k_{} = p{}_{}.r;", cty(b.ty), n, id, bi));
+            }
         }
     }
 }

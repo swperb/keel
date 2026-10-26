@@ -1,0 +1,88 @@
+// Parallel mergesort. The two halves are sorted in parallel through
+// disjoint &mut slices; the verifier proves the slices cannot overlap,
+// every index is in bounds, the recursion terminates, and the result is
+// sorted.
+
+// xs[0..mid] and xs[mid..len] are each sorted; merge them through tmp.
+fn merge(xs: &mut [i64], tmp: &mut [i64], mid: i64)
+  requires len(tmp) == len(xs) && 0 <= mid && mid <= len(xs)
+  requires forall a in 0..mid { forall b in a..mid { xs[a] <= xs[b] } }
+  requires forall a in mid..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  ensures forall a in 0..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+{
+  var i: i64 = 0;
+  var j: i64 = mid;
+  var k: i64 = 0;
+  while k < len(xs)
+    invariant 0 <= i && i <= mid && mid <= j && j <= len(xs) && k == i + (j - mid)
+    invariant forall a in 0..k { forall b in a..k { tmp[a] <= tmp[b] } }
+    invariant k > 0 && i < mid ==> tmp[k - 1] <= xs[i]
+    invariant k > 0 && j < len(xs) ==> tmp[k - 1] <= xs[j]
+    decreases len(xs) - k
+  {
+    if i < mid && (j == len(xs) || xs[i] <= xs[j]) {
+      tmp[k] = xs[i];
+      i = i + 1;
+    } else {
+      tmp[k] = xs[j];
+      j = j + 1;
+    }
+    k = k + 1;
+  }
+  var t: i64 = 0;
+  while t < len(xs)
+    invariant 0 <= t && t <= len(xs)
+    invariant forall a in 0..t { xs[a] == tmp[a] }
+    decreases len(xs) - t
+  {
+    xs[t] = tmp[t];
+    t = t + 1;
+  }
+}
+
+fn msort(xs: &mut [i64], tmp: &mut [i64])
+  requires len(tmp) == len(xs)
+  ensures forall a in 0..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  decreases len(xs)
+{
+  if len(xs) <= 1 {
+    return;
+  }
+  let mid: i64 = len(xs) / 2;
+  if len(xs) <= 4096 {
+    msort(&mut xs[0..mid], &mut tmp[0..mid]);
+    msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
+  } else {
+    par {
+      msort(&mut xs[0..mid], &mut tmp[0..mid]);
+      msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
+    }
+  }
+  merge(&mut xs, &mut tmp, mid);
+}
+
+// Deterministic pseudo-random fill (LCG).
+fn fill(xs: &mut [i64])
+{
+  var x: i64 = 12345;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs) && 0 <= x && x < 2147483648
+    decreases len(xs) - i
+  {
+    x = ((x * 1103515245) + 12345) % 2147483648;
+    xs[i] = x;
+    i = i + 1;
+  }
+}
+
+io fn main() {
+  let n: i64 = 10_000_000;
+  let xs: [i64] = array(n, 0);
+  let tmp: [i64] = array(n, 0);
+  fill(&mut xs);
+  msort(&mut xs, &mut tmp);
+  print(xs[0]);
+  print(xs[n / 2]);
+  print(xs[n - 1]);
+}

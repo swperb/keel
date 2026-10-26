@@ -1,0 +1,7 @@
+// expect: V-SLICE
+fn bump(xs: &mut [i64]) {
+}
+
+fn f(xs: &mut [i64]) {
+  bump(&mut xs[1..len(xs) + 1]);
+}

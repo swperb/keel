@@ -79,6 +79,17 @@ struct Obl {
     reach: bool,
 }
 
+/// One array borrow at a call site: which array, exclusive or not, the
+/// borrowed index range [lo, hi), and which par branch it came from.
+#[derive(Clone)]
+struct Borrowed {
+    name: String,
+    mutable: bool,
+    lo: String,
+    hi: String,
+    branch: usize,
+}
+
 enum Out {
     Scalar(String),
     Arr(V),
@@ -93,6 +104,9 @@ struct Gen<'a> {
     obls: Vec<Obl>,
     n: usize,
     dec_entry: Option<String>,
+    /// While verifying a `par` block: array borrows per branch, for
+    /// cross-branch disjointness obligations.
+    par_borrows: Option<Vec<Borrowed>>,
     /// Inside a lemma: all arithmetic is mathematical.
     ghost: bool,
     /// Checking a spec fn body: calls to spec fns must meet their requires.
@@ -374,22 +388,48 @@ impl<'a> Gen<'a> {
         let arg_spec = spec || g.kind != FnKind::Code;
         let mut cs = St::default();
         let mut flat: Vec<String> = vec![];
-        let mut mut_args: Vec<(String, String)> = vec![]; // (caller name, callee param)
+        // (caller array, callee param, slice range if any)
+        let mut mut_args: Vec<(String, String, Option<(String, String)>)> = vec![];
+        let mut borrowed: Vec<Borrowed> = vec![];
         for (a, p) in args.iter().zip(&g.params) {
             if p.ty.is_array() {
-                let ExprK::Borrow { name: an, .. } = &a.k else { unreachable!() };
+                let ExprK::Borrow { name: an, mutable, range } = &a.k else { unreachable!() };
                 let v = st.vars[an].clone();
-                flat.push(v.smt.clone());
-                flat.push(v.len.clone().unwrap());
-                cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: v.smt, len: v.len });
+                let len = v.len.clone().unwrap();
+                let (view, vlen, r) = match range {
+                    None => (v.smt.clone(), len.clone(), None),
+                    Some((lo, hi)) => {
+                        let lv = self.ex(st, lo, arg_spec);
+                        let hv = self.ex(st, hi, arg_spec);
+                        self.obl(
+                            st,
+                            "V-SLICE",
+                            a.span,
+                            format!("(and (<= 0 {}) (<= {} {}) (<= {} {}))", lv, lv, hv, hv, len),
+                            format!("slice of '{}' may be out of range", an),
+                            "prove 0 <= lo <= hi <= len(array) for the slice bounds",
+                        );
+                        let view = format!("(lambda ((i Int)) (select {} (+ i {})))", v.smt, lv);
+                        (view, format!("(- {} {})", hv, lv), Some((lv, hv)))
+                    }
+                };
+                let (blo, bhi) = r.clone().unwrap_or(("0".into(), len.clone()));
+                borrowed.push(Borrowed { name: an.clone(), mutable: *mutable, lo: blo, hi: bhi, branch: 0 });
+                flat.push(view.clone());
+                flat.push(vlen.clone());
+                cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: view, len: Some(vlen) });
                 if p.ty == Ty::RefMut {
-                    mut_args.push((an.clone(), p.name.clone()));
+                    mut_args.push((an.clone(), p.name.clone(), r));
                 }
             } else {
                 let s = self.ex(st, a, arg_spec);
                 flat.push(s.clone());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: s, len: None });
             }
+        }
+        self.disjoint(st, &borrowed, span, "in this call");
+        if let Some(pb) = &mut self.par_borrows {
+            pb.extend(borrowed);
         }
         let check_pre = g.kind != FnKind::Spec || self.wf;
         if check_pre {
@@ -413,10 +453,22 @@ impl<'a> Gen<'a> {
         if g.kind == FnKind::Spec {
             return Out::Scalar(app(&format!("sf.{}", name), &flat));
         }
-        for (an, pn) in mut_args {
-            let a2 = self.fresh(&an, Ty::Arr, st);
-            st.vars.get_mut(&an).unwrap().smt = a2.clone();
-            cs.vars.get_mut(&pn).unwrap().smt = a2;
+        for (an, pn, r) in mut_args {
+            let post = self.fresh(&an, Ty::Arr, st);
+            cs.vars.get_mut(&pn).unwrap().smt = post.clone();
+            match r {
+                None => st.vars.get_mut(&an).unwrap().smt = post,
+                Some((lo, hi)) => {
+                    // Write the callee's view back into [lo, hi); the rest is unchanged.
+                    let old = st.vars[&an].smt.clone();
+                    let a2 = self.fresh(&an, Ty::Arr, st);
+                    st.pc.push(format!(
+                        "(= {} (lambda ((i Int)) (ite (and (<= {} i) (< i {})) (select {} (- i {})) (select {} i))))",
+                        a2, lo, hi, post, lo, old
+                    ));
+                    st.vars.get_mut(&an).unwrap().smt = a2;
+                }
+            }
         }
         let out = match g.ret {
             Ty::Unit => Out::Unit,
@@ -438,6 +490,30 @@ impl<'a> Gen<'a> {
             st.pc.push(fact);
         }
         out
+    }
+
+    /// Prove every pair of borrows of one array that involves an exclusive
+    /// borrow touches disjoint index ranges.
+    fn disjoint(&mut self, st: &St, bs: &[Borrowed], span: Span, place: &str) {
+        for i in 0..bs.len() {
+            for j in i + 1..bs.len() {
+                let (a, b) = (&bs[i], &bs[j]);
+                if a.name != b.name || !(a.mutable || b.mutable) || a.branch != b.branch && place == "in this call" {
+                    continue;
+                }
+                if place != "in this call" && a.branch == b.branch {
+                    continue; // same branch: already checked within its call
+                }
+                self.obl(
+                    st,
+                    "V-DISJOINT",
+                    span,
+                    format!("(or (<= {} {}) (<= {} {}) (<= {} {}) (<= {} {}))", a.hi, b.lo, b.hi, a.lo, a.hi, a.lo, b.hi, b.lo),
+                    format!("borrows of '{}' {} may overlap (data race)", a.name, place),
+                    "make the slice ranges disjoint, e.g. [lo..mid] and [mid..hi]",
+                );
+            }
+        }
     }
 
     fn check_post(&mut self, st: &mut St, result: Option<V>, span: Span) {
@@ -616,12 +692,24 @@ impl<'a> Gen<'a> {
                 st.pc.push(g);
             }
             StmtK::Par(branches) => {
-                for b in branches {
+                // Branches are verified in sequence; that is sound because every
+                // pair of array borrows across branches is proven disjoint below.
+                let mut all: Vec<Borrowed> = vec![];
+                for (bi, b) in branches.iter().enumerate() {
+                    self.par_borrows = Some(vec![]);
                     let v = self.ex(st, &b.call, false);
-                    let x = self.fresh(&b.name, b.ty, st);
-                    st.pc.push(format!("(= {} {})", x, v));
-                    st.vars.insert(b.name.clone(), V { ty: b.ty, smt: x, len: None });
+                    let mine = self.par_borrows.take().unwrap();
+                    all.extend(mine.into_iter().map(|mut x| {
+                        x.branch = bi;
+                        x
+                    }));
+                    if let Some(n) = &b.name {
+                        let x = self.fresh(n, b.ty, st);
+                        st.pc.push(format!("(= {} {})", x, v));
+                        st.vars.insert(n.clone(), V { ty: b.ty, smt: x, len: None });
+                    }
                 }
+                self.disjoint(st, &all, s.span, "across par branches");
             }
             StmtK::Expr(e) => {
                 self.ex(st, e, false);
@@ -667,7 +755,7 @@ impl<'a> Gen<'a> {
 
 fn mods_expr(e: &Expr, out: &mut std::collections::HashSet<String>) {
     match &e.k {
-        ExprK::Borrow { name, mutable: true } => {
+        ExprK::Borrow { name, mutable: true, .. } => {
             out.insert(name.clone());
         }
         ExprK::Call(_, args) => args.iter().for_each(|a| mods_expr(a, out)),
@@ -769,7 +857,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
     // definition can never vouch for its own well-formedness.
     let specs: Vec<&Func> = if axioms { specs } else { vec![] };
     for f in &specs {
-        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, ghost: true, wf: false };
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false };
         let mut st = St::default();
         let mut binders = vec![];
         let mut flat = vec![];
@@ -801,8 +889,8 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
     s
 }
 
-fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func, prelude: &str) -> (String, Vec<Obl>) {
-    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec };
+fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func) -> (Vec<String>, Vec<Obl>) {
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {
@@ -832,14 +920,30 @@ fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Fu
             g.check_post(&mut st, None, f.span);
         }
     }
+    (g.decls, g.obls)
+}
+
+/// Facts the retry pass drops: quantifiers and array lambdas, which defeat
+/// the solver's model search. Dropping facts can only weaken assumptions.
+fn is_quantified(fact: &str) -> bool {
+    fact.contains("(forall") || fact.contains("(exists") || fact.contains("(lambda")
+}
+
+/// One solver script for a function. `pick` selects which obligations to
+/// include; with `quant_free`, quantified path facts are dropped.
+fn build_script(prelude: &str, decls: &[String], obls: &[Obl], pick: &[usize], quant_free: bool) -> String {
     let mut script = String::from(prelude);
-    for d in &g.decls {
+    for d in decls {
         script += d;
         script.push('\n');
     }
-    for (i, o) in g.obls.iter().enumerate() {
+    for &i in pick {
+        let o = &obls[i];
         script += "(push 1)\n";
         for p in &o.pc {
+            if quant_free && is_quantified(p) {
+                continue;
+            }
             script += &format!("(assert {})\n", p);
         }
         if !o.reach {
@@ -860,7 +964,29 @@ fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Fu
         }
         script += "(pop 1)\n";
     }
-    (script, g.obls)
+    script
+}
+
+/// Map obligation index to (status, model text) from solver output.
+fn parse_results(out: &str) -> HashMap<usize, (String, String)> {
+    let mut results: HashMap<usize, (String, String)> = HashMap::new();
+    let mut cur: Option<usize> = None;
+    for line in out.lines() {
+        if let Some(i) = line.strip_prefix('@') {
+            cur = i.trim().parse().ok();
+            continue;
+        }
+        if let Some(i) = cur {
+            let e = results.entry(i).or_insert((String::new(), String::new()));
+            if e.0.is_empty() {
+                e.0 = line.trim().to_string();
+            } else if !line.starts_with("(error") {
+                e.1 += line;
+                e.1.push(' ');
+            }
+        }
+    }
+    results
 }
 
 // Minimal s-expression reader for model values.
@@ -973,7 +1099,8 @@ pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String>
     let mut total = VResult { diags: vec![], proved: 0, inconclusive: 0 };
     for (phase, axioms) in [(specs, false), (rest, true)] {
         let prelude = shared_prelude(prog, &map, axioms);
-        let r = run_phase(prog, &map, &phase, &prelude, dump_dir)?;
+        let bare = shared_prelude(prog, &map, false);
+        let r = run_phase(prog, &map, &phase, &prelude, &bare, dump_dir)?;
         total.proved += r.proved;
         total.inconclusive += r.inconclusive;
         total.diags.extend(r.diags);
@@ -984,42 +1111,48 @@ pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String>
     Ok(total)
 }
 
-fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prelude: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
-    let jobs: Vec<(String, Vec<Obl>)> = funcs.iter().map(|f| gen_func(prog, map, f, prelude)).collect();
+fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prelude: &str, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
+    let jobs: Vec<(Vec<String>, Vec<Obl>)> = funcs.iter().map(|f| gen_func(prog, map, f)).collect();
+    let scripts: Vec<String> = jobs.iter().map(|(d, o)| build_script(prelude, d, o, &(0..o.len()).collect::<Vec<_>>(), false)).collect();
     if let Some(dir) = dump_dir {
-        for (f, (script, _)) in funcs.iter().zip(&jobs) {
+        for (f, script) in funcs.iter().zip(&scripts) {
             let _ = std::fs::write(format!("{}/{}.smt2", dir, f.name), script);
         }
     }
     // One solver process per function, all in parallel.
     let outputs: Vec<Result<String, String>> = std::thread::scope(|s| {
-        let hs: Vec<_> = jobs.iter().map(|(script, obls)| s.spawn(move || if obls.is_empty() { Ok(String::new()) } else { run_z3(script) })).collect();
+        let hs: Vec<_> = scripts.iter().zip(&jobs).map(|(script, (_, obls))| s.spawn(move || if obls.is_empty() { Ok(String::new()) } else { run_z3(script) })).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut first: Vec<HashMap<usize, (String, String)>> = vec![];
+    for out in outputs {
+        first.push(parse_results(&out?));
+    }
+    // Second pass for proof obligations the solver gave up on: retry without
+    // quantified facts or definitional axioms. Dropping assumptions is sound
+    // for proving (unsat with fewer facts implies unsat with all of them); a
+    // model found this way is reported as a candidate counterexample.
+    let retry: Vec<Vec<usize>> = jobs
+        .iter()
+        .zip(&first)
+        .map(|((_, obls), res)| (0..obls.len()).filter(|&i| !obls[i].reach && res.get(&i).map(|r| r.0 != "sat" && r.0 != "unsat").unwrap_or(true)).collect())
+        .collect();
+    let second: Vec<HashMap<usize, (String, String)>> = std::thread::scope(|s| {
+        let hs: Vec<_> = jobs
+            .iter()
+            .zip(&retry)
+            .map(|((d, o), pick)| {
+                s.spawn(move || if pick.is_empty() { HashMap::new() } else { run_z3(&build_script(bare, d, o, pick, true)).map(|out| parse_results(&out)).unwrap_or_default() })
+            })
+            .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let mut diags = vec![];
     let mut proved = 0;
     let mut inconclusive = 0;
-    for ((_, obls), out) in jobs.iter().zip(outputs) {
-        let out = out?;
-        let mut results: HashMap<usize, (String, String)> = HashMap::new();
-        let mut cur: Option<usize> = None;
-        for line in out.lines() {
-            if let Some(i) = line.strip_prefix('@') {
-                cur = i.trim().parse().ok();
-                continue;
-            }
-            if let Some(i) = cur {
-                let e = results.entry(i).or_insert((String::new(), String::new()));
-                if e.0.is_empty() {
-                    e.0 = line.trim().to_string();
-                } else if !line.starts_with("(error") {
-                    e.1 += line;
-                    e.1.push(' ');
-                }
-            }
-        }
+    for (((_, obls), res1), res2) in jobs.iter().zip(&first).zip(&second) {
         for (i, o) in obls.iter().enumerate() {
-            let (status, model) = results.get(&i).cloned().unwrap_or(("unknown".into(), String::new()));
+            let (status, model) = res1.get(&i).cloned().unwrap_or(("unknown".into(), String::new()));
             match (o.reach, status.as_str()) {
                 (false, "unsat") | (true, "sat") => proved += 1,
                 (true, "unsat") => diags.push(Diag::new(o.code, o.span, o.msg.clone()).hint(o.hint)),
@@ -1029,10 +1162,18 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
                     d.cex = model_values(&model, &o.cex);
                     diags.push(d);
                 }
-                (false, other) => {
-                    let why = if other.starts_with("(error") { format!("solver error: {}", other) } else { "solver gave up".into() };
-                    diags.push(Diag::new("V-UNKNOWN", o.span, format!("could not prove: {} ({})", o.msg, why)).hint(o.hint));
-                }
+                (false, other) => match res2.get(&i).map(|r| (r.0.as_str(), r.1.clone())) {
+                    Some(("unsat", _)) => proved += 1,
+                    Some(("sat", m)) => {
+                        let mut d = Diag::new(o.code, o.span, format!("{} (counterexample ignores quantified facts; it may be spurious)", o.msg)).hint(o.hint);
+                        d.cex = model_values(&m, &o.cex);
+                        diags.push(d);
+                    }
+                    _ => {
+                        let why = if other.starts_with("(error") { format!("solver error: {}", other) } else { "solver gave up".into() };
+                        diags.push(Diag::new("V-UNKNOWN", o.span, format!("could not prove: {} ({})", o.msg, why)).hint(o.hint));
+                    }
+                },
             }
         }
     }
