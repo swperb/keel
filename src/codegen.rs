@@ -52,6 +52,7 @@ static void kl_join(pthread_t t, int spawned) {
 "#;
 
 struct Cg<'a> {
+    prog: &'a Program,
     funcs: HashMap<&'a str, &'a Func>,
     out: String,
     thunks: String,
@@ -63,13 +64,56 @@ struct Cg<'a> {
     cur_ret: Ty,
 }
 
-fn cty(t: Ty) -> &'static str {
+fn cty(t: Ty) -> String {
     match t {
-        Ty::I64 => "int64_t",
-        Ty::Bool => "bool",
-        Ty::Unit => "void",
-        _ => "kl_arr",
+        Ty::I64 => "int64_t".into(),
+        Ty::Bool => "bool".into(),
+        Ty::Unit => "void".into(),
+        Ty::Named(id) => format!("kt_{}", type_name(id)),
+        Ty::Payload(id, v) => format!("kt_{}_v{}", type_name(id), v),
+        _ => "kl_arr".into(),
     }
+}
+
+/// C typedefs for structs and enums, dependencies first.
+fn typedefs(prog: &Program) -> String {
+    let mut order: Vec<u32> = vec![];
+    fn visit(prog: &Program, id: u32, order: &mut Vec<u32>) {
+        if order.contains(&id) {
+            return;
+        }
+        let deps: Vec<u32> = match &prog.def(id).kind {
+            TypeKind::Struct(fs) => fs.iter().filter_map(|f| if let Ty::Named(i) = f.ty { Some(i) } else { None }).collect(),
+            TypeKind::Enum(vs) => vs.iter().flat_map(|v| v.fields.iter()).filter_map(|f| if let Ty::Named(i) = f.ty { Some(i) } else { None }).collect(),
+        };
+        for d in deps {
+            visit(prog, d, order);
+        }
+        order.push(id);
+    }
+    for d in &prog.types {
+        visit(prog, d.id, &mut order);
+    }
+    let fields = |fs: &Vec<Field>| fs.iter().map(|f| format!("{} {};", cty(f.ty), f.name)).collect::<Vec<_>>().join(" ");
+    let mut out = String::new();
+    for id in order {
+        let d = prog.def(id);
+        match &d.kind {
+            TypeKind::Struct(fs) => out += &format!("typedef struct {{ {} }} kt_{};\n", fields(fs), d.name),
+            TypeKind::Enum(vs) => {
+                let mut members = vec![];
+                for (i, v) in vs.iter().enumerate() {
+                    if !v.fields.is_empty() {
+                        out += &format!("typedef struct {{ {} }} kt_{}_v{};\n", fields(&v.fields), d.name, i);
+                        members.push(format!("kt_{}_v{} {};", d.name, i, v.name));
+                    }
+                }
+                let u = if members.is_empty() { String::new() } else { format!(" union {{ {} }} u;", members.join(" ")) };
+                out += &format!("typedef struct {{ int32_t tag;{} }} kt_{};\n", u, d.name);
+            }
+        }
+    }
+    out
 }
 
 fn params_c(f: &Func) -> String {
@@ -119,7 +163,26 @@ impl<'a> Cg<'a> {
                 }
             }
             ExprK::Call(name, args) => self.call(name, args),
-            ExprK::Result | ExprK::Quant { .. } | ExprK::Borrow { .. } => unreachable!("specs are erased"),
+            ExprK::Lit { ty, variant, fields } => {
+                let inits: Vec<String> = fields.iter().map(|(n, fe)| format!(".{} = {}", n, self.ex(fe))).collect();
+                match variant {
+                    None => format!("((kt_{}){{ {} }})", type_name(*ty), inits.join(", ")),
+                    Some(v) => {
+                        let vi = self.prog.variants(*ty).unwrap().iter().position(|x| x.name == *v).unwrap();
+                        if inits.is_empty() {
+                            format!("((kt_{}){{ .tag = {} }})", type_name(*ty), vi)
+                        } else {
+                            format!("((kt_{}){{ .tag = {}, .u.{} = {{ {} }} }})", type_name(*ty), vi, v, inits.join(", "))
+                        }
+                    }
+                }
+            }
+            ExprK::Field(b, f) => format!("({}).{}", self.ex(b), f),
+            ExprK::Is(b, id, v) => {
+                let vi = self.prog.variants(*id).unwrap().iter().position(|x| x.name == *v).unwrap();
+                format!("(({}).tag == {})", self.ex(b), vi)
+            }
+            ExprK::Result | ExprK::Quant { .. } | ExprK::Borrow { .. } | ExprK::IfE(..) | ExprK::As(..) => unreachable!("specs are erased"),
         }
     }
 
@@ -190,9 +253,29 @@ impl<'a> Cg<'a> {
                     self.line(&format!("{} k_{} = {};", cty(*ty), name, v));
                 }
             }
-            StmtK::Assign { name, val } => {
+            StmtK::Assign { name, path, val } => {
                 let v = self.ex(val);
-                self.line(&format!("k_{} = {};", name, v));
+                let p: String = path.iter().map(|f| format!(".{}", f)).collect();
+                self.line(&format!("k_{}{} = {};", name, p, v));
+            }
+            StmtK::Match { scrut, enum_id, arms } => {
+                let v = self.ex(scrut);
+                self.tmp += 1;
+                let t = self.tmp;
+                self.line(&format!("{} m{} = {};", cty(Ty::Named(*enum_id)), t, v));
+                self.line(&format!("switch (m{}.tag) {{", t));
+                for (i, a) in arms.iter().enumerate() {
+                    self.line(&format!("case {}: {{", i));
+                    self.ind += 1;
+                    if let Some(b) = &a.binder {
+                        self.line(&format!("{} k_{} = m{}.u.{};", cty(Ty::Payload(*enum_id, i as u32)), b, t, a.variant));
+                    }
+                    self.block(&a.body);
+                    self.line("break;");
+                    self.ind -= 1;
+                    self.line("}");
+                }
+                self.line("}");
             }
             StmtK::Store { name, idx, val } => {
                 let (i, v) = (self.ex(idx), self.ex(val));
@@ -244,6 +327,12 @@ impl<'a> Cg<'a> {
             }
             StmtK::Assert(_) => {}
             StmtK::Expr(e) => {
+                // Lemma invocations are ghost code: erased.
+                if let ExprK::Call(n, _) = &e.k {
+                    if self.funcs.get(n.as_str()).map(|f| f.kind) == Some(FnKind::Lemma) {
+                        return;
+                    }
+                }
                 let v = self.ex(e);
                 self.line(&format!("{};", v));
             }
@@ -307,13 +396,16 @@ impl<'a> Cg<'a> {
     }
 }
 
-pub fn emit(funcs: &[Func]) -> String {
-    let mut cg = Cg { funcs: funcs.iter().map(|f| (f.name.as_str(), f)).collect(), out: String::new(), thunks: String::new(), ind: 0, tmp: 0, owned: vec![], cur_ret: Ty::Unit };
+pub fn emit(prog: &Program) -> String {
+    let all = &prog.funcs;
+    // Spec fns and lemmas are mathematics: nothing to emit.
+    let funcs: Vec<&Func> = all.iter().filter(|f| f.kind == FnKind::Code).collect();
+    let mut cg = Cg { prog, funcs: all.iter().map(|f| (f.name.as_str(), f)).collect(), out: String::new(), thunks: String::new(), ind: 0, tmp: 0, owned: vec![], cur_ret: Ty::Unit };
     let mut protos = String::new();
-    for f in funcs {
+    for f in &funcs {
         protos += &format!("static {} kl_{}({});\n", cty(f.ret), f.name, params_c(f));
     }
-    for f in funcs {
+    for f in &funcs {
         cg.cur_ret = f.ret;
         cg.out += &format!("static {} kl_{}({}) {{\n", cty(f.ret), f.name, params_c(f));
         cg.ind = 1;
@@ -321,6 +413,8 @@ pub fn emit(funcs: &[Func]) -> String {
         cg.out += "}\n\n";
     }
     let mut c = String::from(RUNTIME);
+    c += "\n";
+    c += &typedefs(prog);
     c += "\n";
     c += &protos;
     c += "\n";

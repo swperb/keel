@@ -1,0 +1,4 @@
+// expect: E-BORROW
+fn r(xs: &[i64]) -> i64 { return 0; }
+fn g(xs: &mut [i64]) -> i64 { return 0; }
+fn f(xs: &mut [i64]) -> i64 { par { let a: i64 = g(&mut xs); let b: i64 = r(&xs); } return a + b; }

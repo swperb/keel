@@ -1,0 +1,3 @@
+// expect: E-MATCH
+enum E { A, B { v: i64 } }
+fn f(e: E) -> i64 { match e { E.B(p) => { return p.v; } E.A => { return 0; } } }

@@ -1,0 +1,3 @@
+// expect: V-TERMINATION
+spec fn bad(n: i64) -> i64 decreases n { bad(n) + 1 }
+lemma use_it(n: i64) ensures 0 == 1 { }

@@ -26,7 +26,7 @@ struct Opts {
     dump_smt: Option<String>,
 }
 
-fn front(file: &str, opts: &Opts, need_main: bool) -> Vec<ast::Func> {
+fn front(file: &str, opts: &Opts, need_main: bool) -> ast::Program {
     let src = std::fs::read_to_string(file).unwrap_or_else(|e| {
         eprintln!("keel: cannot read {}: {}", file, e);
         exit(2)
@@ -38,19 +38,19 @@ fn front(file: &str, opts: &Opts, need_main: bool) -> Vec<ast::Func> {
             eprint!("{}", diag::render_human(file, diags));
         }
     };
-    let funcs = match parse::parse(&src) {
+    let prog = match parse::parse(&src) {
         Ok(f) => f,
         Err(d) => {
             report(&[d], 0);
             exit(1)
         }
     };
-    let diags = check::check(&funcs, need_main);
+    let diags = check::check(&prog, need_main);
     if !diags.is_empty() {
         report(&diags, 0);
         exit(1);
     }
-    let vr = verify::verify(&funcs, opts.dump_smt.as_deref()).unwrap_or_else(|e| {
+    let vr = verify::verify(&prog, opts.dump_smt.as_deref()).unwrap_or_else(|e| {
         eprintln!("keel: {}", e);
         exit(2)
     });
@@ -61,14 +61,17 @@ fn front(file: &str, opts: &Opts, need_main: bool) -> Vec<ast::Func> {
     if opts.json {
         print!("{}", diag::render_json(file, &[], vr.proved));
     } else {
-        eprintln!("keel: {} obligations proved in {} functions", vr.proved, funcs.len());
+        eprintln!("keel: {} obligations proved in {} functions", vr.proved, prog.funcs.len());
+        if vr.inconclusive > 0 {
+            eprintln!("keel: note: {} reachability check(s) inconclusive (could not confirm the path is possible)", vr.inconclusive);
+        }
     }
-    funcs
+    prog
 }
 
 fn build(file: &str, opts: &Opts, out: &str) {
-    let funcs = front(file, opts, true);
-    let c = codegen::emit(&funcs);
+    let prog = front(file, opts, true);
+    let c = codegen::emit(&prog);
     let cpath = format!("{}.c", out);
     std::fs::write(&cpath, &c).unwrap_or_else(|e| {
         eprintln!("keel: cannot write {}: {}", cpath, e);

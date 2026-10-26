@@ -117,6 +117,9 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "V-TERMINATION" => "The `decreases` measure is not proven to be non-negative and strictly decreasing.",
         "V-ASSERT" => "The verifier could not prove this `assert`.",
         "V-ALLOC" => "The verifier could not prove the array length is in 0..=2^40.",
+        "E-MATCH" => "A match must list every variant of the enum exactly once, in declaration order, with a binder exactly when the variant has a payload. There is no wildcard arm.",
+        "V-VACUOUS" => "The function's requires clauses can never all be true. Any ensures would then be provable from a contradiction, so this is rejected.",
+        "V-DEAD" => "This branch, match arm or loop body can never execute given the conditions and invariants that guard it. Dead code hides untested logic; delete it or fix the guard.",
         "V-UNKNOWN" => "The solver timed out. Strengthen invariants or split the function.",
         _ => return None,
     })

@@ -2,5 +2,8 @@
 name = "keel"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only WITH Keel-output-exception"
+repository = "https://github.com/swperb/keel"
+description = "Agent-first systems language with machine-checked proofs, compiled to check-free C"
 
 [dependencies]

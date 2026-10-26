@@ -1,0 +1,49 @@
+// Lean-style proofs on top of the SMT verifier. `spec fn` defines
+// mathematics, `lemma` proves facts about it (recursion is induction), and
+// code invokes lemmas to justify itself. Spec fns and lemmas are erased.
+
+// The sum of the first n elements, as a mathematical definition.
+spec fn total(xs: &[i64], n: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { total(&xs, n - 1) + xs[n - 1] }
+}
+
+// By induction on n: small elements give a small total.
+lemma total_bounds(xs: &[i64], n: i64)
+  requires 0 <= n && n <= len(xs)
+  requires forall k in 0..len(xs) { 0 <= xs[k] && xs[k] <= 1000 }
+  ensures 0 <= total(&xs, n) && total(&xs, n) <= 1000 * n
+  decreases n
+{
+  if n > 0 {
+    total_bounds(&xs, n - 1);
+  }
+}
+
+// The executable sum is proven equal to the definition, and the lemma is
+// what proves the running total cannot overflow.
+fn sum(xs: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { 0 <= xs[k] && xs[k] <= 1000 }
+  ensures result == total(&xs, len(xs))
+{
+  var s: i64 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    invariant s == total(&xs, i)
+    decreases len(xs) - i
+  {
+    total_bounds(&xs, i + 1);
+    s = s + xs[i];
+    i = i + 1;
+  }
+  return s;
+}
+
+io fn main() {
+  let xs: [i64] = array(1000, 3);
+  print(sum(&xs));
+}

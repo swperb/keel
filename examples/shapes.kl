@@ -1,0 +1,63 @@
+// Structs, enums and exhaustive match. Matches have no wildcard and list
+// variants in declaration order, so adding a variant breaks every match
+// that must handle it.
+struct Point {
+  x: i64,
+  y: i64,
+}
+
+enum Shape {
+  Circle { center: Point, r: i64 },
+  Rect { w: i64, h: i64 },
+  Empty,
+}
+
+spec fn bounded(s: Shape) -> bool {
+  if s is Shape.Circle {
+    0 <= (s as Shape.Circle).r && (s as Shape.Circle).r <= 1_000_000
+  } else {
+    if s is Shape.Rect {
+      0 <= (s as Shape.Rect).w && (s as Shape.Rect).w <= 1_000_000 && 0 <= (s as Shape.Rect).h && (s as Shape.Rect).h <= 1_000_000
+    } else {
+      true
+    }
+  }
+}
+
+// Area of the axis-aligned bounding box.
+fn bbox_area(s: Shape) -> i64
+  requires bounded(s)
+  ensures result >= 0
+  ensures s is Shape.Empty ==> result == 0
+{
+  match s {
+    Shape.Circle(c) => {
+      let d: i64 = 2 * c.r;
+      return d * d;
+    }
+    Shape.Rect(rc) => {
+      return rc.w * rc.h;
+    }
+    Shape.Empty => {
+      return 0;
+    }
+  }
+}
+
+fn shift(p: Point, dx: i64) -> Point
+  requires 0 <= dx && dx <= 100 && p.x <= 1_000_000
+  ensures result.x == p.x + dx && result.y == p.y
+{
+  var q: Point = p;
+  q.x = q.x + dx;
+  return q;
+}
+
+io fn main() {
+  let origin: Point = Point { x: 0, y: 0 };
+  let moved: Point = shift(origin, 7);
+  print(moved.x);
+  print(bbox_area(Shape.Circle { center: moved, r: 5 }));
+  print(bbox_area(Shape.Rect { w: 3, h: 4 }));
+  print(bbox_area(Shape.Empty));
+}

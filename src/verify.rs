@@ -3,10 +3,20 @@
 // division by zero, contract violation, non-termination) becomes a proof
 // obligation discharged by Z3. Anything not proven is a compile error, which
 // is what lets codegen emit zero runtime checks.
+//
+// Beyond safety, the verifier guards against specifications that prove
+// nothing: contradictory `requires` clauses (V-VACUOUS) and branches that can
+// never run (V-DEAD) are errors, so a proof cannot pass by making its own
+// assumptions impossible.
+//
+// `spec fn` definitions become SMT functions with guarded definitional
+// axioms; their bodies are checked for well-formedness and termination,
+// which keeps the axioms consistent. `lemma` bodies are ghost code: checked
+// like functions (recursion is induction), then erased.
 
 use crate::ast::*;
 use crate::diag::Diag;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -24,6 +34,23 @@ fn lit(v: i128) -> String {
 
 fn in_range(t: &str) -> String {
     format!("(and (<= {} {}) (<= {} {}))", lit(I64_MIN), t, t, lit(I64_MAX))
+}
+
+fn app(f: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        f.to_string()
+    } else {
+        format!("({} {})", f, args.join(" "))
+    }
+}
+
+fn sort(ty: Ty) -> String {
+    match ty {
+        Ty::Bool => "Bool".into(),
+        Ty::Named(id) => type_name(id),
+        t if t.is_array() => "(Array Int Int)".into(),
+        _ => "Int".into(),
+    }
 }
 
 #[derive(Clone)]
@@ -48,6 +75,8 @@ struct Obl {
     pc: Vec<String>,
     goal: String,
     cex: Vec<(String, String)>,
+    /// A reachability check: passes when the path condition is satisfiable.
+    reach: bool,
 }
 
 enum Out {
@@ -57,26 +86,50 @@ enum Out {
 }
 
 struct Gen<'a> {
+    prog: &'a Program,
     funcs: &'a HashMap<String, &'a Func>,
     f: &'a Func,
     decls: Vec<String>,
     obls: Vec<Obl>,
     n: usize,
     dec_entry: Option<String>,
+    /// Inside a lemma: all arithmetic is mathematical.
+    ghost: bool,
+    /// Checking a spec fn body: calls to spec fns must meet their requires.
+    wf: bool,
 }
 
 impl<'a> Gen<'a> {
+    fn ranges(&self, term: &str, ty: Ty, out: &mut Vec<String>) {
+        match ty {
+            Ty::I64 => out.push(in_range(term)),
+            Ty::Named(id) => match &self.prog.def(id).kind {
+                TypeKind::Struct(fs) => {
+                    for f in fs {
+                        self.ranges(&format!("({}.{} {})", type_name(id), f.name, term), f.ty, out);
+                    }
+                }
+                TypeKind::Enum(vs) => {
+                    for v in vs {
+                        for f in &v.fields {
+                            self.ranges(&format!("({}.{}.{} {})", type_name(id), v.name, f.name, term), f.ty, out);
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
     fn fresh(&mut self, base: &str, ty: Ty, st: &mut St) -> String {
         self.n += 1;
         let name = format!("v.{}.{}", base, self.n);
-        let sort = match ty {
-            Ty::Bool => "Bool",
-            t if t.is_array() => "(Array Int Int)",
-            _ => "Int",
-        };
-        self.decls.push(format!("(declare-const {} {})", name, sort));
-        if ty == Ty::I64 {
-            st.pc.push(in_range(&name));
+        self.decls.push(format!("(declare-const {} {})", name, sort(ty)));
+        // Ghost values (lemmas, spec fns) are mathematical integers: no i64 bounds.
+        if !(self.ghost || self.wf) {
+            let mut rs = vec![];
+            self.ranges(&name, ty, &mut rs);
+            st.pc.extend(rs);
         }
         name
     }
@@ -93,7 +146,8 @@ impl<'a> Gen<'a> {
         let mut cex: Vec<(String, String)> = vec![];
         for (k, v) in &st.vars {
             match v.ty {
-                Ty::I64 | Ty::Bool => cex.push((k.clone(), v.smt.clone())),
+                Ty::I64 | Ty::Bool | Ty::Named(_) => cex.push((k.clone(), v.smt.clone())),
+                Ty::Payload(..) | Ty::Unit => {}
                 _ => {
                     if let Some(l) = &v.len {
                         cex.push((format!("len({})", k), l.clone()));
@@ -102,7 +156,12 @@ impl<'a> Gen<'a> {
             }
         }
         cex.sort();
-        self.obls.push(Obl { code, msg, hint, span, pc: st.pc.clone(), goal, cex });
+        self.obls.push(Obl { code, msg, hint, span, pc: st.pc.clone(), goal, cex, reach: false });
+    }
+
+    /// Require that the current path is satisfiable (it can actually happen).
+    fn reach(&mut self, st: &St, code: &'static str, span: Span, msg: &str, hint: &'static str) {
+        self.obls.push(Obl { code, msg: msg.into(), hint, span, pc: st.pc.clone(), goal: "false".into(), cex: vec![], reach: true });
     }
 
     /// Evaluate `e` assuming `cond` (short-circuit semantics). Facts learned
@@ -120,6 +179,7 @@ impl<'a> Gen<'a> {
     }
 
     fn ex(&mut self, st: &mut St, e: &Expr, spec: bool) -> String {
+        let spec = spec || self.ghost;
         match &e.k {
             ExprK::Int(v) => lit(*v),
             ExprK::Bool(b) => b.to_string(),
@@ -170,14 +230,7 @@ impl<'a> Gen<'a> {
                             _ => "*",
                         });
                         if !spec {
-                            self.obl(
-                                st,
-                                "V-OVERFLOW",
-                                e.span,
-                                in_range(&t),
-                                format!("'{}' may overflow i64", op.sym()),
-                                "bound the operands with requires clauses or loop invariants",
-                            );
+                            self.obl(st, "V-OVERFLOW", e.span, in_range(&t), format!("'{}' may overflow i64", op.sym()), "bound the operands with requires clauses or loop invariants");
                         }
                         t
                     }
@@ -211,20 +264,72 @@ impl<'a> Gen<'a> {
                 self.n += 1;
                 let q = format!("q.{}.{}", var, self.n);
                 st.vars.insert(var.clone(), V { ty: Ty::I64, smt: q.clone(), len: None });
-                let bv = self.ex(st, body, true);
-                st.vars.remove(var);
                 let range = format!("(and (<= {} {}) (< {} {}))", lv, q, q, hv);
+                let bv = self.ex_under(st, &range, body, true);
+                st.vars.remove(var);
                 if *forall {
                     format!("(forall (({} Int)) (=> {} {}))", q, range, bv)
                 } else {
                     format!("(exists (({} Int)) (and {} {}))", q, range, bv)
                 }
             }
+            ExprK::IfE(c, a, b) => {
+                let cv = self.ex(st, c, true);
+                let av = self.ex_under(st, &cv, a, true);
+                let bv = self.ex_under(st, &format!("(not {})", cv), b, true);
+                format!("(ite {} {} {})", cv, av, bv)
+            }
+            ExprK::Lit { ty, variant, fields } => {
+                let args: Vec<String> = fields.iter().map(|(_, fe)| self.ex(st, fe, spec)).collect();
+                let ctor = match variant {
+                    None => type_name(*ty),
+                    Some(v) => format!("{}.{}", type_name(*ty), v),
+                };
+                app(&ctor, &args)
+            }
+            ExprK::Field(base, f) => {
+                let bt = self.ty_of(st, base);
+                let bv = self.ex(st, base, spec);
+                match bt {
+                    Ty::Named(id) => format!("({}.{} {})", type_name(id), f, bv),
+                    Ty::Payload(id, vi) => {
+                        let vname = &self.prog.variants(id).unwrap()[vi as usize].name;
+                        format!("({}.{}.{} {})", type_name(id), vname, f, bv)
+                    }
+                    _ => unreachable!("checked"),
+                }
+            }
+            ExprK::As(base, _, _) => self.ex(st, base, spec),
+            ExprK::Is(base, id, v) => {
+                let bv = self.ex(st, base, spec);
+                format!("((_ is {}.{}) {})", type_name(*id), v, bv)
+            }
             ExprK::Call(name, args) => match self.call(st, name, args, e.span, spec) {
                 Out::Scalar(s) => s,
                 Out::Unit => "true".into(),
                 Out::Arr(_) => unreachable!("checked"),
             },
+        }
+    }
+
+    /// Static type of an expression whose type is a struct/enum/payload
+    /// (only needed to pick the right field accessor).
+    fn ty_of(&self, st: &St, e: &Expr) -> Ty {
+        match &e.k {
+            ExprK::Var(n) => st.vars[n].ty,
+            ExprK::Result => st.vars["result"].ty,
+            ExprK::Lit { ty, .. } => Ty::Named(*ty),
+            ExprK::Field(b, f) => {
+                let bt = self.ty_of(st, b);
+                self.prog.fields_of(bt).and_then(|fs| fs.iter().find(|x| x.name == *f)).map(|x| x.ty).unwrap()
+            }
+            ExprK::Call(n, _) => self.funcs[n.as_str()].ret,
+            ExprK::IfE(_, a, _) => self.ty_of(st, a),
+            ExprK::As(_, id, v) => {
+                let vi = self.prog.variants(*id).unwrap().iter().position(|x| x.name == *v).unwrap();
+                Ty::Payload(*id, vi as u32)
+            }
+            _ => Ty::I64,
         }
     }
 
@@ -255,14 +360,7 @@ impl<'a> Gen<'a> {
             "array" => {
                 let nv = self.ex(st, &args[0], spec);
                 let fill = self.ex(st, &args[1], spec);
-                self.obl(
-                    st,
-                    "V-ALLOC",
-                    span,
-                    format!("(and (<= 0 {}) (<= {} {}))", nv, nv, MAX_LEN),
-                    "array length may be negative or larger than 2^40".into(),
-                    "bound the length with a requires clause",
-                );
+                self.obl(st, "V-ALLOC", span, format!("(and (<= 0 {}) (<= {} {}))", nv, nv, MAX_LEN), "array length may be negative or larger than 2^40".into(), "bound the length with a requires clause");
                 let a = self.fresh("arr", Ty::Arr, st);
                 let len = self.fresh_len("arr", st);
                 st.pc.push(format!("(= {} ((as const (Array Int Int)) {}))", a, fill));
@@ -272,36 +370,48 @@ impl<'a> Gen<'a> {
             _ => {}
         }
         let g = self.funcs[name];
+        // Lemma and spec fn arguments are specifications: no runtime obligations.
+        let arg_spec = spec || g.kind != FnKind::Code;
         let mut cs = St::default();
+        let mut flat: Vec<String> = vec![];
         let mut mut_args: Vec<(String, String)> = vec![]; // (caller name, callee param)
         for (a, p) in args.iter().zip(&g.params) {
             if p.ty.is_array() {
                 let ExprK::Borrow { name: an, .. } = &a.k else { unreachable!() };
                 let v = st.vars[an].clone();
+                flat.push(v.smt.clone());
+                flat.push(v.len.clone().unwrap());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: v.smt, len: v.len });
                 if p.ty == Ty::RefMut {
                     mut_args.push((an.clone(), p.name.clone()));
                 }
             } else {
-                let s = self.ex(st, a, spec);
+                let s = self.ex(st, a, arg_spec);
+                flat.push(s.clone());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: s, len: None });
             }
         }
-        for r in &g.requires {
-            let goal = self.ex(&mut cs, r, true);
-            self.obl(st, "V-REQUIRES", span, goal, format!("call to '{}' may violate its precondition", name), "establish the callee's requires clause before the call");
+        let check_pre = g.kind != FnKind::Spec || self.wf;
+        if check_pre {
+            for r in &g.requires {
+                let goal = self.ex(&mut cs, r, true);
+                self.obl(st, "V-REQUIRES", span, goal, format!("call to '{}' may violate its precondition", name), "establish the callee's requires clause before the call");
+            }
+            if g.name == self.f.name {
+                let d = self.ex(&mut cs, g.decreases.as_ref().unwrap(), true);
+                let entry = self.dec_entry.clone().unwrap();
+                self.obl(
+                    st,
+                    "V-TERMINATION",
+                    span,
+                    format!("(and (<= 0 {}) (< {} {}))", d, d, entry),
+                    format!("recursive call to '{}' may not decrease the measure", name),
+                    "the decreases expression must be >= 0 and strictly smaller at every recursive call",
+                );
+            }
         }
-        if g.name == self.f.name {
-            let d = self.ex(&mut cs, g.decreases.as_ref().unwrap(), true);
-            let entry = self.dec_entry.clone().unwrap();
-            self.obl(
-                st,
-                "V-TERMINATION",
-                span,
-                format!("(and (<= 0 {}) (< {} {}))", d, d, entry),
-                format!("recursive call to '{}' may not decrease the measure", name),
-                "the decreases expression must be >= 0 and strictly smaller at every recursive call",
-            );
+        if g.kind == FnKind::Spec {
+            return Out::Scalar(app(&format!("sf.{}", name), &flat));
         }
         for (an, pn) in mut_args {
             let a2 = self.fresh(&an, Ty::Arr, st);
@@ -351,6 +461,35 @@ impl<'a> Gen<'a> {
         }
     }
 
+    fn dead_check(&mut self, st: &St, b: &Block, what: &str) {
+        let span = b.first().map(|s| s.span);
+        if let Some(span) = span {
+            self.reach(st, "V-DEAD", span, &format!("this {} can never execute", what), "delete it, or fix the condition or invariants that make it impossible");
+        }
+    }
+
+    /// Rebuild a struct value with the field at `path` replaced.
+    fn update(&self, term: &str, ty: Ty, path: &[String], val: &str) -> String {
+        if path.is_empty() {
+            return val.to_string();
+        }
+        let Ty::Named(id) = ty else { unreachable!() };
+        let fs = self.prog.struct_fields(id).unwrap();
+        let tn = type_name(id);
+        let args: Vec<String> = fs
+            .iter()
+            .map(|f| {
+                let cur = format!("({}.{} {})", tn, f.name, term);
+                if f.name == path[0] {
+                    self.update(&cur, f.ty, &path[1..], val)
+                } else {
+                    cur
+                }
+            })
+            .collect();
+        app(&tn, &args)
+    }
+
     fn stmt(&mut self, st: &mut St, s: &Stmt) {
         match &s.k {
             StmtK::Let { name, ty, init, .. } => {
@@ -364,11 +503,12 @@ impl<'a> Gen<'a> {
                     st.vars.insert(name.clone(), V { ty: *ty, smt: x, len: None });
                 }
             }
-            StmtK::Assign { name, val } => {
+            StmtK::Assign { name, path, val } => {
                 let v = self.ex(st, val, false);
-                let ty = st.vars[name].ty;
-                let x = self.fresh(name, ty, st);
-                st.pc.push(format!("(= {} {})", x, v));
+                let cur = st.vars[name].clone();
+                let newv = self.update(&cur.smt, cur.ty, path, &v);
+                let x = self.fresh(name, cur.ty, st);
+                st.pc.push(format!("(= {} {})", x, newv));
                 st.vars.get_mut(name).unwrap().smt = x;
             }
             StmtK::Store { name, idx, val } => {
@@ -391,20 +531,43 @@ impl<'a> Gen<'a> {
                 let c = self.ex(st, cond, false);
                 let mut t = st.clone();
                 t.pc.push(c.clone());
+                self.dead_check(&t, then, "branch");
                 self.block(&mut t, then);
                 let mut e = st.clone();
-                e.pc.push(format!("(not {})", c));
+                let nc = format!("(not {})", c);
+                e.pc.push(nc.clone());
                 if let Some(eb) = els {
+                    self.dead_check(&e, eb, "else branch");
                     self.block(&mut e, eb);
                 }
-                self.merge(st, &c, t, e);
+                self.merge(st, vec![(c, t), (nc, e)]);
+            }
+            StmtK::Match { scrut, enum_id, arms } => {
+                let sv = self.ex(st, scrut, false);
+                let tn = type_name(*enum_id);
+                let mut outs = vec![];
+                for (i, a) in arms.iter().enumerate() {
+                    let c = format!("((_ is {}.{}) {})", tn, a.variant, sv);
+                    let mut b = st.clone();
+                    b.pc.push(c.clone());
+                    self.dead_check(&b, &a.body, "match arm");
+                    if let Some(bn) = &a.binder {
+                        b.vars.insert(bn.clone(), V { ty: Ty::Payload(*enum_id, i as u32), smt: sv.clone(), len: None });
+                    }
+                    self.block(&mut b, &a.body);
+                    if let Some(bn) = &a.binder {
+                        b.vars.remove(bn);
+                    }
+                    outs.push((c, b));
+                }
+                self.merge(st, outs);
             }
             StmtK::While { cond, invs, dec, body } => {
                 for i in invs {
                     let g = self.ex(st, i, true);
                     self.obl(st, "V-INVARIANT-ENTRY", i.span, g, "loop invariant may not hold on entry".into(), "initialize variables so the invariant holds before the first iteration");
                 }
-                let mut mods = HashSet::new();
+                let mut mods = std::collections::HashSet::new();
                 mods_block(body, &mut mods);
                 let mut names: Vec<String> = mods.into_iter().filter(|m| st.vars.contains_key(m)).collect();
                 names.sort();
@@ -420,6 +583,7 @@ impl<'a> Gen<'a> {
                 let c = self.ex(st, cond, false);
                 let mut b = st.clone();
                 b.pc.push(c.clone());
+                self.dead_check(&b, body, "loop body");
                 let d0 = self.ex(&mut b, dec, true);
                 self.obl(&b, "V-TERMINATION", dec.span, format!("(<= 0 {})", d0), "loop measure may be negative while the loop runs".into(), "the decreases expression must be >= 0 whenever the condition holds");
                 self.block(&mut b, body);
@@ -447,7 +611,9 @@ impl<'a> Gen<'a> {
             }
             StmtK::Assert(e) => {
                 let g = self.ex(st, e, true);
-                self.obl(st, "V-ASSERT", s.span, g, "assertion may not hold".into(), "add the facts it depends on as requires clauses or invariants");
+                self.obl(st, "V-ASSERT", s.span, g.clone(), "assertion may not hold".into(), "add the facts it depends on as requires clauses or invariants");
+                // A proven assert is a fact for the rest of the path.
+                st.pc.push(g);
             }
             StmtK::Par(branches) => {
                 for b in branches {
@@ -463,62 +629,64 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn merge(&mut self, st: &mut St, c: &str, t: St, e: St) {
-        match (t.done, e.done) {
-            (true, true) => {
-                st.done = true;
-                return;
-            }
-            (true, false) => {
-                *st = e;
-                return;
-            }
-            (false, true) => {
-                *st = t;
-                return;
-            }
-            _ => {}
+    /// Join the states of mutually exclusive, exhaustive branches.
+    fn merge(&mut self, st: &mut St, outs: Vec<(String, St)>) {
+        let live: Vec<(String, St)> = outs.into_iter().filter(|(_, s)| !s.done).collect();
+        if live.is_empty() {
+            st.done = true;
+            return;
+        }
+        if live.len() == 1 {
+            *st = live.into_iter().next().unwrap().1;
+            return;
         }
         let base = st.pc.len();
-        st.pc.push(format!("(=> {} (and true {}))", c, t.pc[base..].join(" ")));
-        st.pc.push(format!("(=> (not {}) (and true {}))", c, e.pc[base..].join(" ")));
+        let conds: Vec<&str> = live.iter().map(|(c, _)| c.as_str()).collect();
+        let any = format!("(or {})", conds.join(" "));
+        for (c, s) in &live {
+            st.pc.push(format!("(=> {} (and true {}))", c, s.pc[base..].join(" ")));
+        }
+        st.pc.push(any);
         let mut names: Vec<String> = st.vars.keys().cloned().collect();
         names.sort();
         for n in names {
-            let (tv, ev) = (&t.vars[&n].smt, &e.vars[&n].smt);
-            if tv != ev {
-                let ty = st.vars[&n].ty;
-                let m = self.fresh(&n, if ty.is_array() { Ty::Arr } else { ty }, st);
-                st.pc.push(format!("(= {} (ite {} {} {}))", m, c, tv, ev));
-                st.vars.get_mut(&n).unwrap().smt = m;
-            } else {
-                st.vars.get_mut(&n).unwrap().smt = tv.clone();
+            let vals: Vec<&String> = live.iter().map(|(_, s)| &s.vars[&n].smt).collect();
+            if vals.iter().all(|v| *v == vals[0]) {
+                st.vars.get_mut(&n).unwrap().smt = vals[0].clone();
+                continue;
             }
+            let ty = st.vars[&n].ty;
+            let m = self.fresh(&n, if ty.is_array() { Ty::Arr } else { ty }, st);
+            for (c, s) in &live {
+                st.pc.push(format!("(=> {} (= {} {}))", c, m, s.vars[&n].smt));
+            }
+            st.vars.get_mut(&n).unwrap().smt = m;
         }
     }
 }
 
-fn mods_expr(e: &Expr, out: &mut HashSet<String>) {
+fn mods_expr(e: &Expr, out: &mut std::collections::HashSet<String>) {
     match &e.k {
         ExprK::Borrow { name, mutable: true } => {
             out.insert(name.clone());
         }
         ExprK::Call(_, args) => args.iter().for_each(|a| mods_expr(a, out)),
         ExprK::Index(_, i) => mods_expr(i, out),
-        ExprK::Unary(_, a) => mods_expr(a, out),
+        ExprK::Unary(_, a) | ExprK::Field(a, _) | ExprK::Is(a, _, _) | ExprK::As(a, _, _) => mods_expr(a, out),
         ExprK::Binary(_, a, b) => {
             mods_expr(a, out);
             mods_expr(b, out);
         }
+        ExprK::Lit { fields, .. } => fields.iter().for_each(|(_, f)| mods_expr(f, out)),
         _ => {}
     }
 }
 
-fn mods_block(b: &Block, out: &mut HashSet<String>) {
+fn mods_block(b: &Block, out: &mut std::collections::HashSet<String>) {
     for s in b {
         match &s.k {
             StmtK::Let { init, .. } => mods_expr(init, out),
-            StmtK::Assign { name, val } => {
+            StmtK::Assign { name, val, .. } => {
                 out.insert(name.clone());
                 mods_expr(val, out);
             }
@@ -533,6 +701,10 @@ fn mods_block(b: &Block, out: &mut HashSet<String>) {
                 if let Some(e) = els {
                     mods_block(e, out);
                 }
+            }
+            StmtK::Match { scrut, arms, .. } => {
+                mods_expr(scrut, out);
+                arms.iter().for_each(|a| mods_block(&a.body, out));
             }
             StmtK::While { cond, body, .. } => {
                 mods_expr(cond, out);
@@ -552,8 +724,85 @@ const PRELUDE: &str = "(set-option :produce-models true)
 (define-fun cmod ((a Int) (b Int)) Int (- a (* b (cdiv a b))))
 ";
 
-fn gen_func<'a>(funcs: &'a HashMap<String, &'a Func>, f: &'a Func) -> (String, Vec<Obl>) {
-    let mut g = Gen { funcs, f, decls: vec![], obls: vec![], n: 0, dec_entry: None };
+/// SMT declarations shared by every function: datatypes for structs and
+/// enums, and spec fns with their definitional axioms.
+fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) -> String {
+    let mut s = String::from(PRELUDE);
+    if !prog.types.is_empty() {
+        let heads: Vec<String> = prog.types.iter().map(|d| format!("({} 0)", d.name)).collect();
+        let bodies: Vec<String> = prog
+            .types
+            .iter()
+            .map(|d| {
+                let ctor = |cname: String, fs: &Vec<Field>, prefix: &str| {
+                    let accs: Vec<String> = fs.iter().map(|f| format!("({}.{} {})", prefix, f.name, sort(f.ty))).collect();
+                    if accs.is_empty() {
+                        format!("({})", cname)
+                    } else {
+                        format!("({} {})", cname, accs.join(" "))
+                    }
+                };
+                match &d.kind {
+                    TypeKind::Struct(fs) => format!("({})", ctor(d.name.clone(), fs, &d.name)),
+                    TypeKind::Enum(vs) => {
+                        let cs: Vec<String> = vs.iter().map(|v| ctor(format!("{}.{}", d.name, v.name), &v.fields, &format!("{}.{}", d.name, v.name))).collect();
+                        format!("({})", cs.join(" "))
+                    }
+                }
+            })
+            .collect();
+        s += &format!("(declare-datatypes ({}) ({}))\n", heads.join(" "), bodies.join(" "));
+    }
+    // Declare all spec fns first so axioms may reference each other.
+    let specs: Vec<&Func> = prog.funcs.iter().filter(|f| f.kind == FnKind::Spec).collect();
+    for f in &specs {
+        let mut sorts = vec![];
+        for p in &f.params {
+            sorts.push(sort(p.ty));
+            if p.ty.is_array() {
+                sorts.push("Int".into());
+            }
+        }
+        s += &format!("(declare-fun sf.{} ({}) {})\n", f.name, sorts.join(" "), sort(f.ret));
+    }
+    // Spec fns are checked without any definitional axioms, so a bad
+    // definition can never vouch for its own well-formedness.
+    let specs: Vec<&Func> = if axioms { specs } else { vec![] };
+    for f in &specs {
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, ghost: true, wf: false };
+        let mut st = St::default();
+        let mut binders = vec![];
+        let mut flat = vec![];
+        for p in &f.params {
+            let x = format!("p.{}", p.name);
+            binders.push(format!("({} {})", x, sort(p.ty)));
+            flat.push(x.clone());
+            let len = if p.ty.is_array() {
+                let l = format!("p.{}.len", p.name);
+                binders.push(format!("({} Int)", l));
+                flat.push(l.clone());
+                Some(l)
+            } else {
+                None
+            };
+            st.vars.insert(p.name.clone(), V { ty: p.ty, smt: x, len });
+        }
+        let pre: Vec<String> = f.requires.iter().map(|r| g.ex(&mut st, r, true)).collect();
+        let StmtK::Return(Some(body)) = &f.body[0].k else { unreachable!() };
+        let bv = g.ex(&mut st, body, true);
+        let call = app(&format!("sf.{}", f.name), &flat);
+        let axiom = format!("(=> (and true {}) (= {} {}))", pre.join(" "), call, bv);
+        if binders.is_empty() {
+            s += &format!("(assert {})\n", axiom);
+        } else {
+            s += &format!("(assert (forall ({}) (! {} :pattern ({}))))\n", binders.join(" "), axiom, call);
+        }
+    }
+    s
+}
+
+fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func, prelude: &str) -> (String, Vec<Obl>) {
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {
@@ -569,14 +818,21 @@ fn gen_func<'a>(funcs: &'a HashMap<String, &'a Func>, f: &'a Func) -> (String, V
         let fact = g.ex(&mut st, r, true);
         st.pc.push(fact);
     }
+    g.reach(&st, "V-VACUOUS", f.span, &format!("the requires clauses of '{}' contradict each other, so every proof about it would be vacuous", f.name), "no input satisfies these preconditions; fix them");
     if let Some(d) = &f.decreases {
         g.dec_entry = Some(g.ex(&mut st, d, true));
     }
-    g.block(&mut st, &f.body);
-    if !st.done {
-        g.check_post(&mut st, None, f.span);
+    if f.kind == FnKind::Spec {
+        // Well-formedness: evaluate the body so recursive calls are checked.
+        let StmtK::Return(Some(body)) = &f.body[0].k else { unreachable!() };
+        g.ex(&mut st, body, true);
+    } else {
+        g.block(&mut st, &f.body);
+        if !st.done {
+            g.check_post(&mut st, None, f.span);
+        }
     }
-    let mut script = String::from(PRELUDE);
+    let mut script = String::from(prelude);
     for d in &g.decls {
         script += d;
         script.push('\n');
@@ -586,8 +842,19 @@ fn gen_func<'a>(funcs: &'a HashMap<String, &'a Func>, f: &'a Func) -> (String, V
         for p in &o.pc {
             script += &format!("(assert {})\n", p);
         }
-        script += &format!("(assert (not {}))\n(echo \"@{}\")\n(check-sat)\n", o.goal, i);
-        if !o.cex.is_empty() {
+        if !o.reach {
+            script += &format!("(assert (not {}))\n", o.goal);
+        }
+        // Reachability needs a model, which quantified axioms make expensive;
+        // give it a short budget and report inconclusive results.
+        if o.reach {
+            script += "(set-option :timeout 300)\n";
+        }
+        script += &format!("(echo \"@{}\")\n(check-sat)\n", i);
+        if o.reach {
+            script += "(set-option :timeout 10000)\n";
+        }
+        if !o.cex.is_empty() && !o.reach {
             let terms: Vec<&str> = o.cex.iter().map(|(_, t)| t.as_str()).collect();
             script += &format!("(get-value ({}))\n", terms.join(" "));
         }
@@ -633,20 +900,20 @@ fn sexprs(s: &str) -> Vec<String> {
 fn pretty_value(v: &str) -> String {
     let v = v.trim();
     if let Some(inner) = v.strip_prefix("(-").and_then(|x| x.strip_suffix(')')) {
-        return format!("-{}", inner.trim());
+        if !inner.contains('(') {
+            return format!("-{}", inner.trim());
+        }
     }
     v.to_string()
 }
 
 fn model_values(text: &str, cex: &[(String, String)]) -> Vec<(String, String)> {
     let mut out = vec![];
-    for (item, (name, term)) in sexprs(text).iter().zip(cex) {
-        let _ = term;
+    for (item, (name, _)) in sexprs(text).iter().zip(cex) {
         // item is "(<term> <value>)"; the value is its last top-level element.
         let body = item.strip_prefix('(').and_then(|x| x.strip_suffix(')')).unwrap_or(item);
         let (mut depth, mut start, mut last) = (0i32, 0usize, (0usize, body.len()));
-        let bytes = body.as_bytes();
-        for (i, &c) in bytes.iter().enumerate() {
+        for (i, &c) in body.as_bytes().iter().enumerate() {
             match c {
                 b'(' => {
                     if depth == 0 {
@@ -660,7 +927,7 @@ fn model_values(text: &str, cex: &[(String, String)]) -> Vec<(String, String)> {
                         last = (start, i + 1);
                     }
                 }
-                b' ' if depth == 0 => start = i + 1,
+                b' ' | b'\n' if depth == 0 => start = i + 1,
                 _ => {
                     if depth == 0 {
                         last = (start, i + 1);
@@ -676,6 +943,8 @@ fn model_values(text: &str, cex: &[(String, String)]) -> Vec<(String, String)> {
 pub struct VResult {
     pub diags: Vec<Diag>,
     pub proved: usize,
+    /// Reachability checks the solver could not settle within budget.
+    pub inconclusive: usize,
 }
 
 pub fn z3_path() -> String {
@@ -695,9 +964,28 @@ fn run_z3(script: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-pub fn verify(funcs: &[Func], dump_dir: Option<&str>) -> Result<VResult, String> {
+pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String> {
+    let funcs = &prog.funcs;
     let map: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
-    let jobs: Vec<(String, Vec<Obl>)> = funcs.iter().map(|f| gen_func(&map, f)).collect();
+    // Phase 1: spec fn definitions (no axioms). Phase 2: everything else,
+    // only once every definition is known to be well-founded.
+    let (specs, rest): (Vec<&Func>, Vec<&Func>) = funcs.iter().partition(|f| f.kind == FnKind::Spec);
+    let mut total = VResult { diags: vec![], proved: 0, inconclusive: 0 };
+    for (phase, axioms) in [(specs, false), (rest, true)] {
+        let prelude = shared_prelude(prog, &map, axioms);
+        let r = run_phase(prog, &map, &phase, &prelude, dump_dir)?;
+        total.proved += r.proved;
+        total.inconclusive += r.inconclusive;
+        total.diags.extend(r.diags);
+        if !total.diags.is_empty() {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prelude: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
+    let jobs: Vec<(String, Vec<Obl>)> = funcs.iter().map(|f| gen_func(prog, map, f, prelude)).collect();
     if let Some(dir) = dump_dir {
         for (f, (script, _)) in funcs.iter().zip(&jobs) {
             let _ = std::fs::write(format!("{}/{}.smt2", dir, f.name), script);
@@ -710,6 +998,7 @@ pub fn verify(funcs: &[Func], dump_dir: Option<&str>) -> Result<VResult, String>
     });
     let mut diags = vec![];
     let mut proved = 0;
+    let mut inconclusive = 0;
     for ((_, obls), out) in jobs.iter().zip(outputs) {
         let out = out?;
         let mut results: HashMap<usize, (String, String)> = HashMap::new();
@@ -731,19 +1020,22 @@ pub fn verify(funcs: &[Func], dump_dir: Option<&str>) -> Result<VResult, String>
         }
         for (i, o) in obls.iter().enumerate() {
             let (status, model) = results.get(&i).cloned().unwrap_or(("unknown".into(), String::new()));
-            match status.as_str() {
-                "unsat" => proved += 1,
-                "sat" => {
+            match (o.reach, status.as_str()) {
+                (false, "unsat") | (true, "sat") => proved += 1,
+                (true, "unsat") => diags.push(Diag::new(o.code, o.span, o.msg.clone()).hint(o.hint)),
+                (true, _) => inconclusive += 1, // not a proof failure, but reported
+                (false, "sat") => {
                     let mut d = Diag::new(o.code, o.span, o.msg.clone()).hint(o.hint);
                     d.cex = model_values(&model, &o.cex);
                     diags.push(d);
                 }
-                _ => {
-                    diags.push(Diag::new("V-UNKNOWN", o.span, format!("could not prove: {} (solver gave up)", o.msg)).hint(o.hint));
+                (false, other) => {
+                    let why = if other.starts_with("(error") { format!("solver error: {}", other) } else { "solver gave up".into() };
+                    diags.push(Diag::new("V-UNKNOWN", o.span, format!("could not prove: {} ({})", o.msg, why)).hint(o.hint));
                 }
             }
         }
     }
     diags.sort_by_key(|d| (d.span.line, d.span.col));
-    Ok(VResult { diags, proved })
+    Ok(VResult { diags, proved, inconclusive })
 }

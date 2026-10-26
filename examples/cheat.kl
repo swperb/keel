@@ -1,0 +1,41 @@
+// Ways an agent might try to make a proof pass without doing the work.
+// Each one is rejected. Run `keel check examples/cheat.kl`.
+
+// Contradictory preconditions would make any ensures "provable".
+fn answer(x: i64) -> i64
+  requires x > 10 && x < 5
+  ensures result == 42
+{
+  return 0;
+}
+
+// A branch that can never run hides untested logic.
+fn classify(x: i64) -> i64
+  requires 0 <= x && x <= 10
+{
+  if x > 100 {
+    return 1;
+  }
+  return 0;
+}
+
+// An invariant that contradicts the loop condition makes the body unreachable.
+fn spin(n: i64) -> i64
+  requires 0 <= n && n <= 100
+{
+  var i: i64 = 0;
+  while i < n
+    invariant i == n
+    decreases n - i
+  {
+    i = i + 1;
+  }
+  return i;
+}
+
+// A lemma whose conclusion does not follow.
+lemma wishful(n: i64)
+  requires n >= 0
+  ensures n * n >= 2 * n
+{
+}

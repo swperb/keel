@@ -16,11 +16,12 @@ enum Tok {
 const KEYWORDS: &[&str] = &[
     "fn", "io", "let", "var", "if", "else", "while", "invariant", "decreases", "requires", "ensures",
     "return", "assert", "par", "forall", "exists", "in", "true", "false", "result", "mut", "i64", "bool",
+    "struct", "enum", "match", "is", "as", "spec", "lemma",
 ];
 
 // Longest first so `==>` wins over `==`.
 const PUNCT: &[&str] = &[
-    "==>", "->", "==", "!=", "<=", ">=", "&&", "||", "..", "+", "-", "*", "/", "%", "<", ">", "!", "=",
+    "==>", "=>", "->", "==", "!=", "<=", ">=", "&&", "||", "..", ".", "+", "-", "*", "/", "%", "<", ">", "!", "=",
     "(", ")", "{", "}", "[", "]", ",", ":", ";", "&",
 ];
 
@@ -93,6 +94,13 @@ fn lex(src: &str) -> Result<Vec<(Tok, Span)>, Diag> {
 struct Parser {
     toks: Vec<(Tok, Span)>,
     pos: usize,
+    /// Interned type names and where each was first mentioned.
+    tnames: Vec<String>,
+    tspans: Vec<Span>,
+}
+
+fn is_upper(s: &str) -> bool {
+    s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
 }
 
 type PResult<T> = Result<T, Diag>;
@@ -146,14 +154,80 @@ impl Parser {
             self.err(&format!("'{}'", k))
         }
     }
+    /// A value name (variable, function, field): must start lowercase.
     fn ident(&mut self) -> PResult<String> {
         match self.peek().clone() {
-            Tok::Ident(s) => {
+            Tok::Ident(s) if !is_upper(&s) => {
                 self.bump();
                 Ok(s)
             }
+            Tok::Ident(s) => Err(Diag::new("E-NAME", self.span(), format!("'{}': value names start with a lowercase letter; uppercase is reserved for types", s))),
             _ => self.err("identifier"),
         }
+    }
+
+    /// A type or variant name: must start uppercase.
+    fn upper(&mut self) -> PResult<String> {
+        match self.peek().clone() {
+            Tok::Ident(s) if is_upper(&s) => {
+                self.bump();
+                Ok(s)
+            }
+            Tok::Ident(s) => Err(Diag::new("E-NAME", self.span(), format!("'{}': type and variant names start with an uppercase letter", s))),
+            _ => self.err("type name"),
+        }
+    }
+
+    fn intern(&mut self, name: &str, span: Span) -> u32 {
+        if let Some(i) = self.tnames.iter().position(|n| n == name) {
+            return i as u32;
+        }
+        self.tnames.push(name.to_string());
+        self.tspans.push(span);
+        (self.tnames.len() - 1) as u32
+    }
+
+    fn fields(&mut self) -> PResult<Vec<Field>> {
+        self.expect_p("{")?;
+        let mut v = vec![];
+        while !self.is_p("}") {
+            let span = self.span();
+            let name = self.ident()?;
+            self.expect_p(":")?;
+            let ty = self.ty()?;
+            v.push(Field { name, ty, span });
+            if !self.is_p("}") {
+                self.expect_p(",")?;
+            }
+        }
+        self.bump();
+        Ok(v)
+    }
+
+    fn typedef(&mut self) -> PResult<TypeDef> {
+        let span = self.span();
+        let is_struct = self.is_kw("struct");
+        self.bump();
+        let name = self.upper()?;
+        let id = self.intern(&name, span);
+        let kind = if is_struct {
+            TypeKind::Struct(self.fields()?)
+        } else {
+            self.expect_p("{")?;
+            let mut vs = vec![];
+            while !self.is_p("}") {
+                let vspan = self.span();
+                let vname = self.upper()?;
+                let fields = if self.is_p("{") { self.fields()? } else { vec![] };
+                vs.push(Variant { name: vname, fields, span: vspan });
+                if !self.is_p("}") {
+                    self.expect_p(",")?;
+                }
+            }
+            self.bump();
+            TypeKind::Enum(vs)
+        };
+        Ok(TypeDef { id, name, kind, span })
     }
 
     fn ty(&mut self) -> PResult<Ty> {
@@ -165,6 +239,13 @@ impl Parser {
             self.bump();
             return Ok(Ty::Bool);
         }
+        if let Tok::Ident(n) = self.peek().clone() {
+            if is_upper(&n) {
+                let span = self.span();
+                self.bump();
+                return Ok(Ty::Named(self.intern(&n, span)));
+            }
+        }
         let mut t = Ty::Arr;
         if self.is_p("&") {
             self.bump();
@@ -175,7 +256,7 @@ impl Parser {
             }
         }
         if !self.is_p("[") {
-            return self.err("a type (i64, bool, [i64], &[i64], &mut [i64])");
+            return self.err("a type (i64, bool, [i64], &[i64], &mut [i64], or a struct/enum name)");
         }
         self.bump();
         self.expect_kw("i64")?;
@@ -185,13 +266,22 @@ impl Parser {
 
     fn func(&mut self) -> PResult<Func> {
         let span = self.span();
-        let io = if self.is_kw("io") {
+        let mut io = false;
+        let mut kind = FnKind::Code;
+        if self.is_kw("io") {
             self.bump();
-            true
+            io = true;
+            self.expect_kw("fn")?;
+        } else if self.is_kw("spec") {
+            self.bump();
+            kind = FnKind::Spec;
+            self.expect_kw("fn")?;
+        } else if self.is_kw("lemma") {
+            self.bump();
+            kind = FnKind::Lemma;
         } else {
-            false
-        };
-        self.expect_kw("fn")?;
+            self.expect_kw("fn")?;
+        }
         let name = self.ident()?;
         self.expect_p("(")?;
         let mut params = vec![];
@@ -230,8 +320,17 @@ impl Parser {
                 break;
             }
         }
-        let body = self.block()?;
-        Ok(Func { name, io, params, ret, requires, ensures, decreases, body, span })
+        let body = if kind == FnKind::Spec {
+            // A spec fn body is a single expression.
+            self.expect_p("{")?;
+            let bspan = self.span();
+            let e = self.expr()?;
+            self.expect_p("}")?;
+            vec![Stmt { k: StmtK::Return(Some(e)), span: bspan }]
+        } else {
+            self.block()?
+        };
+        Ok(Func { name, kind, io, params, ret, requires, ensures, decreases, body, span })
     }
 
     fn block(&mut self) -> PResult<Block> {
@@ -311,12 +410,50 @@ impl Parser {
                 }
                 StmtK::Par(branches)
             }
-            Tok::Ident(name) if matches!(self.toks[self.pos + 1].0, Tok::P("=")) => {
+            Tok::Ident(name) if matches!(self.toks[self.pos + 1].0, Tok::P("=") | Tok::P(".")) => {
                 self.bump();
-                self.bump();
+                let mut path = vec![];
+                while self.is_p(".") {
+                    self.bump();
+                    path.push(self.ident()?);
+                }
+                self.expect_p("=")?;
                 let val = self.expr()?;
                 self.expect_p(";")?;
-                StmtK::Assign { name, val }
+                StmtK::Assign { name, path, val }
+            }
+            Tok::Kw("match") => {
+                self.bump();
+                let scrut = self.expr()?;
+                self.expect_p("{")?;
+                let mut arms = vec![];
+                let mut enum_id = None;
+                while !self.is_p("}") {
+                    let aspan = self.span();
+                    let tname = self.upper()?;
+                    let id = self.intern(&tname, aspan);
+                    if enum_id.is_none() {
+                        enum_id = Some(id);
+                    }
+                    self.expect_p(".")?;
+                    let variant = self.upper()?;
+                    let binder = if self.is_p("(") {
+                        self.bump();
+                        let b = self.ident()?;
+                        self.expect_p(")")?;
+                        Some(b)
+                    } else {
+                        None
+                    };
+                    self.expect_p("=>")?;
+                    let body = self.block()?;
+                    arms.push(Arm { enum_id: id, variant, binder, body, span: aspan });
+                }
+                self.bump();
+                let Some(enum_id) = enum_id else {
+                    return Err(Diag::new("E-PARSE", span, "a match needs at least one arm"));
+                };
+                StmtK::Match { scrut, enum_id, arms }
             }
             Tok::Ident(name) if matches!(self.toks[self.pos + 1].0, Tok::P("[")) => {
                 // Either `xs[i] = v;` or an expression statement starting with an index.
@@ -408,6 +545,17 @@ impl Parser {
     // cmp := arith [cmpop arith]   (non-associative)
     fn cmp(&mut self) -> PResult<Expr> {
         let lhs = self.arith()?;
+        if self.is_kw("is") || self.is_kw("as") {
+            let is = self.is_kw("is");
+            let span = self.span();
+            self.bump();
+            let tname = self.upper()?;
+            let id = self.intern(&tname, span);
+            self.expect_p(".")?;
+            let variant = self.upper()?;
+            let k = if is { ExprK::Is(Box::new(lhs), id, variant) } else { ExprK::As(Box::new(lhs), id, variant) };
+            return Ok(Expr { k, span });
+        }
         let op = match self.peek() {
             Tok::P("==") => BOp::Eq,
             Tok::P("!=") => BOp::Ne,
@@ -474,7 +622,14 @@ impl Parser {
             let e = self.unary()?;
             return Ok(Expr { k: ExprK::Unary(UOp::Not, Box::new(e)), span });
         }
-        self.primary()
+        let mut e = self.primary()?;
+        while self.is_p(".") {
+            let span = self.span();
+            self.bump();
+            let f = self.ident()?;
+            e = Expr { k: ExprK::Field(Box::new(e), f), span };
+        }
+        Ok(e)
     }
 
     fn primary(&mut self) -> PResult<Expr> {
@@ -489,6 +644,17 @@ impl Parser {
             Tok::Kw("true") => ExprK::Bool(true),
             Tok::Kw("false") => ExprK::Bool(false),
             Tok::Kw("result") => ExprK::Result,
+            Tok::Kw("if") => {
+                let c = self.expr()?;
+                self.expect_p("{")?;
+                let a = self.expr()?;
+                self.expect_p("}")?;
+                self.expect_kw("else")?;
+                self.expect_p("{")?;
+                let b = self.expr()?;
+                self.expect_p("}")?;
+                ExprK::IfE(Box::new(c), Box::new(a), Box::new(b))
+            }
             Tok::P("(") => {
                 let e = self.expr()?;
                 self.expect_p(")")?;
@@ -513,6 +679,35 @@ impl Parser {
                 let body = self.expr()?;
                 self.expect_p("}")?;
                 ExprK::Quant { forall: q == "forall", var, lo: Box::new(lo), hi: Box::new(hi), body: Box::new(body) }
+            }
+            Tok::Ident(tname) if is_upper(&tname) => {
+                let id = self.intern(&tname, span);
+                let variant = if self.is_p(".") {
+                    self.bump();
+                    Some(self.upper()?)
+                } else {
+                    None
+                };
+                let mut fields = vec![];
+                // A variant literal takes braces only if they open a field list
+                // (`{ name: ...`), so `if s == Shape.Empty { ... }` stays a block.
+                let field_list = self.is_p("{")
+                    && matches!(self.toks.get(self.pos + 1).map(|t| &t.0), Some(Tok::Ident(_)))
+                    && matches!(self.toks.get(self.pos + 2).map(|t| &t.0), Some(Tok::P(":")));
+                if field_list || variant.is_none() {
+                    self.expect_p("{")?;
+                    while !self.is_p("}") {
+                        let f = self.ident()?;
+                        self.expect_p(":")?;
+                        let e = self.expr()?;
+                        fields.push((f, e));
+                        if !self.is_p("}") {
+                            self.expect_p(",")?;
+                        }
+                    }
+                    self.bump();
+                }
+                ExprK::Lit { ty: id, variant, fields }
             }
             Tok::Ident(name) => {
                 if self.is_p("(") {
@@ -543,12 +738,29 @@ impl Parser {
     }
 }
 
-pub fn parse(src: &str) -> Result<Vec<Func>, Diag> {
+pub fn parse(src: &str) -> Result<Program, Diag> {
     let toks = lex(src)?;
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser { toks, pos: 0, tnames: vec![], tspans: vec![] };
     let mut funcs = vec![];
+    let mut defs: Vec<TypeDef> = vec![];
     while *p.peek() != Tok::Eof {
-        funcs.push(p.func()?);
+        if p.is_kw("struct") || p.is_kw("enum") {
+            let d = p.typedef()?;
+            if defs.iter().any(|x| x.id == d.id) {
+                return Err(Diag::new("E-NAME", d.span, format!("type '{}' is already defined", d.name)));
+            }
+            defs.push(d);
+        } else {
+            funcs.push(p.func()?);
+        }
     }
-    Ok(funcs)
+    let mut types = vec![];
+    for (i, name) in p.tnames.iter().enumerate() {
+        match defs.iter().position(|d| d.id == i as u32) {
+            Some(j) => types.push(defs[j].clone()),
+            None => return Err(Diag::new("E-NAME", p.tspans[i], format!("unknown type '{}'", name))),
+        }
+    }
+    let _ = TYPE_NAMES.set(p.tnames.clone());
+    Ok(Program { types, funcs })
 }

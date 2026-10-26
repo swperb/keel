@@ -1,5 +1,6 @@
 // Static checks that run before verification: names, types, borrows,
-// effects, spec purity, definite return, recursion shape.
+// effects, spec purity, ghost-code rules, exhaustive matches, definite
+// return, recursion shape.
 
 use crate::ast::*;
 use crate::diag::Diag;
@@ -9,12 +10,13 @@ pub struct Sig {
     pub params: Vec<Ty>,
     pub ret: Ty,
     pub io: bool,
+    pub kind: FnKind,
 }
 
 pub fn sigs(funcs: &[Func]) -> HashMap<String, Sig> {
     let mut m = HashMap::new();
     for f in funcs {
-        m.insert(f.name.clone(), Sig { params: f.params.iter().map(|p| p.ty).collect(), ret: f.ret, io: f.io });
+        m.insert(f.name.clone(), Sig { params: f.params.iter().map(|p| p.ty).collect(), ret: f.ret, io: f.io, kind: f.kind });
     }
     m
 }
@@ -33,8 +35,11 @@ enum Ctx {
 }
 
 struct Checker<'a> {
+    prog: &'a Program,
     sigs: &'a HashMap<String, Sig>,
     f: &'a Func,
+    /// True inside a lemma body (ghost code).
+    ghost: bool,
     scopes: Vec<HashMap<String, Local>>,
     diags: Vec<Diag>,
     calls: HashSet<String>,
@@ -51,8 +56,7 @@ impl<'a> Checker<'a> {
     }
     fn declare(&mut self, n: &str, l: Local, span: Span) {
         if self.lookup(n).is_some() {
-            self.err(Diag::new("E-NAME", span, format!("'{}' is already in scope (no shadowing)", n))
-                .hint("pick a new, descriptive name"));
+            self.err(Diag::new("E-NAME", span, format!("'{}' is already in scope (no shadowing)", n)).hint("pick a new, descriptive name"));
         }
         self.scopes.last_mut().unwrap().insert(n.to_string(), l);
     }
@@ -69,6 +73,25 @@ impl<'a> Checker<'a> {
                 None
             }
         }
+    }
+
+    fn want(&mut self, got: Ty, want: Ty, span: Span, what: &str) {
+        if got != want {
+            self.err(Diag::new("E-TYPE", span, format!("{} must be {}, found {}", what, want.name(), got.name())));
+        }
+    }
+
+    fn variant_index(&mut self, id: u32, name: &str, span: Span) -> Option<usize> {
+        let Some(vs) = self.prog.variants(id) else {
+            self.err(Diag::new("E-TYPE", span, format!("'{}' is a struct, not an enum", type_name(id))));
+            return None;
+        };
+        let i = vs.iter().position(|v| v.name == name);
+        if i.is_none() {
+            let names: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
+            self.err(Diag::new("E-NAME", span, format!("enum '{}' has no variant '{}' (variants: {})", type_name(id), name, names.join(", "))));
+        }
+        i
     }
 
     /// Type of an expression. `arr_ok` is true only for `let` initializers
@@ -146,7 +169,7 @@ impl<'a> Checker<'a> {
                     }
                     BOp::Eq | BOp::Ne => {
                         if ta != tb || !(ta == Ty::I64 || ta == Ty::Bool) {
-                            self.err(Diag::new("E-TYPE", e.span, format!("cannot compare {} with {}", ta.name(), tb.name())));
+                            self.err(Diag::new("E-TYPE", e.span, format!("cannot compare {} with {} (only i64 and bool support ==; compare fields or use 'is')", ta.name(), tb.name())));
                         }
                         Ty::Bool
                     }
@@ -172,17 +195,74 @@ impl<'a> Checker<'a> {
                 self.scopes.pop();
                 Ty::Bool
             }
-            ExprK::Call(name, args) => self.call(name, args, e.span, ctx, arr_ok),
+            ExprK::IfE(c, a, b) => {
+                if ctx == Ctx::Code {
+                    self.err(Diag::new("E-SPEC", e.span, "'if' expressions are only allowed in specifications; use an if statement"));
+                }
+                let tc = self.expr(c, ctx, false);
+                self.want(tc, Ty::Bool, c.span, "condition");
+                let ta = self.expr(a, ctx, false);
+                let tb = self.expr(b, ctx, false);
+                self.want(tb, ta, b.span, "else branch");
+                ta
+            }
+            ExprK::Lit { ty, variant, fields } => {
+                let want: Vec<Field> = match variant {
+                    None => match self.prog.struct_fields(*ty) {
+                        Some(f) => f.clone(),
+                        None => {
+                            self.err(Diag::new("E-TYPE", e.span, format!("'{}' is an enum; write {}.Variant", type_name(*ty), type_name(*ty))));
+                            return Ty::Named(*ty);
+                        }
+                    },
+                    Some(v) => match self.variant_index(*ty, v, e.span) {
+                        Some(i) => self.prog.variants(*ty).unwrap()[i].fields.clone(),
+                        None => return Ty::Named(*ty),
+                    },
+                };
+                let got: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                let exp: Vec<&str> = want.iter().map(|f| f.name.as_str()).collect();
+                if got != exp {
+                    self.err(Diag::new("E-TYPE", e.span, format!("fields must be given exactly once, in declaration order: {{ {} }}", exp.join(", "))));
+                }
+                for ((_, fe), fd) in fields.iter().zip(&want) {
+                    let t = self.expr(fe, ctx, false);
+                    self.want(t, fd.ty, fe.span, &format!("field '{}'", fd.name));
+                }
+                Ty::Named(*ty)
+            }
+            ExprK::Field(base, f) => {
+                let tb = self.expr(base, ctx, false);
+                match self.prog.fields_of(tb).and_then(|fs| fs.iter().find(|x| x.name == *f)) {
+                    Some(fd) => fd.ty,
+                    None => {
+                        self.err(Diag::new("E-TYPE", e.span, format!("{} has no field '{}'", tb.name(), f)));
+                        Ty::I64
+                    }
+                }
+            }
+            ExprK::Is(base, id, v) => {
+                let tb = self.expr(base, ctx, false);
+                self.want(tb, Ty::Named(*id), base.span, "left side of 'is'");
+                self.variant_index(*id, v, e.span);
+                Ty::Bool
+            }
+            ExprK::As(base, id, v) => {
+                if ctx == Ctx::Code {
+                    self.err(Diag::new("E-SPEC", e.span, "'as' is only allowed in specifications; use match in code"));
+                }
+                let tb = self.expr(base, ctx, false);
+                self.want(tb, Ty::Named(*id), base.span, "left side of 'as'");
+                match self.variant_index(*id, v, e.span) {
+                    Some(i) => Ty::Payload(*id, i as u32),
+                    None => Ty::I64,
+                }
+            }
+            ExprK::Call(name, args) => self.call(name, args, e.span, ctx),
         }
     }
 
-    fn want(&mut self, got: Ty, want: Ty, span: Span, what: &str) {
-        if got != want {
-            self.err(Diag::new("E-TYPE", span, format!("{} must be {}, found {}", what, want.name(), got.name())));
-        }
-    }
-
-    fn call(&mut self, name: &str, args: &[Expr], span: Span, ctx: Ctx, _arr_ok: bool) -> Ty {
+    fn call(&mut self, name: &str, args: &[Expr], span: Span, ctx: Ctx) -> Ty {
         if name == "len" {
             if args.len() != 1 {
                 self.err(Diag::new("E-TYPE", span, "len takes exactly one array"));
@@ -197,9 +277,14 @@ impl<'a> Checker<'a> {
             }
             return Ty::I64;
         }
-        if ctx != Ctx::Code {
-            self.err(Diag::new("E-SPEC", span, format!("specifications may not call '{}' (only len is allowed)", name)));
+        let callee_kind = self.sigs.get(name).map(|s| s.kind);
+        if ctx != Ctx::Code && callee_kind != Some(FnKind::Spec) {
+            self.err(Diag::new("E-SPEC", span, format!("specifications may only call 'spec fn' functions and len, not '{}'", name)));
             return Ty::I64;
+        }
+        if ctx == Ctx::Code && callee_kind == Some(FnKind::Spec) {
+            self.err(Diag::new("E-SPEC", span, format!("'{}' is a spec fn (mathematics, not code) and can only be used in specifications", name)));
+            return self.sigs[name].ret;
         }
         if name == "array" {
             if args.len() != 2 {
@@ -229,9 +314,20 @@ impl<'a> Checker<'a> {
             return Ty::I64;
         };
         self.calls.insert(name.to_string());
+        if sig.kind == FnKind::Lemma {
+            self.err(Diag::new("E-SPEC", span, format!("lemma '{}' can only be invoked as a statement", name)));
+        }
+        if self.ghost && sig.kind == FnKind::Code {
+            self.err(Diag::new("E-SPEC", span, format!("lemmas may not call executable function '{}'", name)));
+        }
         if sig.io && !self.f.io {
             self.err(Diag::new("E-EFFECT", span, format!("'{}' is io; only an 'io fn' may call it", name)));
         }
+        self.args(name, args, span, ctx)
+    }
+
+    fn args(&mut self, name: &str, args: &[Expr], span: Span, ctx: Ctx) -> Ty {
+        let sig = &self.sigs[name];
         if sig.params.len() != args.len() {
             self.err(Diag::new("E-TYPE", span, format!("'{}' takes {} arguments, got {}", name, sig.params.len(), args.len())));
             return sig.ret;
@@ -243,8 +339,7 @@ impl<'a> Checker<'a> {
         for (a, pt) in args.iter().zip(params) {
             if pt.is_array() {
                 let ExprK::Borrow { name: an, mutable } = &a.k else {
-                    let hint = if pt == Ty::RefMut { "&mut" } else { "&" };
-                    self.err(Diag::new("E-BORROW", a.span, format!("expected {} here, write '{}name'", pt.name(), if hint == "&" { "&" } else { "&mut " })));
+                    self.err(Diag::new("E-BORROW", a.span, format!("expected {} here, write '{}name'", pt.name(), if pt == Ty::RefMut { "&mut " } else { "&" })));
                     continue;
                 };
                 let Some(l) = self.array_var(an, a.span) else { continue };
@@ -296,7 +391,24 @@ impl<'a> Checker<'a> {
         self.scopes.pop();
     }
 
+    fn ghost_forbid(&mut self, s: &Stmt, what: &str) -> bool {
+        if self.ghost {
+            self.err(Diag::new("E-SPEC", s.span, format!("{} is not allowed in a lemma; lemmas prove by cases, asserts and recursion (induction)", what)));
+        }
+        self.ghost
+    }
+
+    /// Expression context for non-spec expressions in the current body.
+    fn code(&self) -> Ctx {
+        if self.ghost {
+            Ctx::Spec
+        } else {
+            Ctx::Code
+        }
+    }
+
     fn stmt(&mut self, s: &Stmt) {
+        let cx = self.code();
         match &s.k {
             StmtK::Let { name, ty, init, mutable } => {
                 if matches!(ty, Ty::Ref | Ty::RefMut) {
@@ -305,41 +417,94 @@ impl<'a> Checker<'a> {
                 if *ty == Ty::Arr && *mutable {
                     self.err(Diag::new("E-MUT", s.span, "arrays are bound with 'let'; their elements are still writable"));
                 }
+                if *ty == Ty::Arr && self.ghost_forbid(s, "allocating an array") {
+                    return;
+                }
                 if *ty == Ty::Arr && matches!(init.k, ExprK::Var(_)) {
                     self.err(Diag::new("E-ARRAY", init.span, "arrays cannot be moved between locals; borrow instead"));
                 }
-                let t = self.expr(init, Ctx::Code, *ty == Ty::Arr);
+                let t = self.expr(init, cx, *ty == Ty::Arr);
                 self.want(t, *ty, init.span, &format!("initializer of '{}'", name));
                 self.declare(name, Local { ty: *ty, mutable: *mutable }, s.span);
             }
-            StmtK::Assign { name, val } => {
-                let t = self.expr(val, Ctx::Code, false);
+            StmtK::Assign { name, path, val } => {
+                let tv = self.expr(val, cx, false);
                 match self.lookup(name) {
-                    Some(l) if l.mutable => self.want(t, l.ty, val.span, &format!("value assigned to '{}'", name)),
+                    Some(l) if l.mutable => {
+                        let mut t = l.ty;
+                        for f in path {
+                            let fty = self.prog.struct_fields_ty(t, f);
+                            match fty {
+                                Some(ft) => t = ft,
+                                None => {
+                                    self.err(Diag::new("E-TYPE", s.span, format!("{} has no assignable field '{}'", t.name(), f)));
+                                    return;
+                                }
+                            }
+                        }
+                        self.want(tv, t, val.span, &format!("value assigned to '{}'", name));
+                    }
                     Some(_) => self.err(Diag::new("E-MUT", s.span, format!("'{}' is not a 'var'", name))),
                     None => self.err(Diag::new("E-NAME", s.span, format!("unknown name '{}'", name))),
                 }
             }
             StmtK::Store { name, idx, val } => {
+                if self.ghost_forbid(s, "writing an array") {
+                    return;
+                }
                 if let Some(l) = self.array_var(name, s.span) {
                     if l.ty == Ty::Ref {
                         self.err(Diag::new("E-MUT", s.span, format!("'{}' is a shared borrow (&[i64]); writing needs &mut [i64]", name)));
                     }
                 }
-                let ti = self.expr(idx, Ctx::Code, false);
+                let ti = self.expr(idx, cx, false);
                 self.want(ti, Ty::I64, idx.span, "array index");
-                let tv = self.expr(val, Ctx::Code, false);
+                let tv = self.expr(val, cx, false);
                 self.want(tv, Ty::I64, val.span, "stored value");
             }
             StmtK::If { cond, then, els } => {
-                let t = self.expr(cond, Ctx::Code, false);
+                let t = self.expr(cond, cx, false);
                 self.want(t, Ty::Bool, cond.span, "if condition");
                 self.block(then);
                 if let Some(e) = els {
                     self.block(e);
                 }
             }
+            StmtK::Match { scrut, enum_id, arms } => {
+                let t = self.expr(scrut, cx, false);
+                self.want(t, Ty::Named(*enum_id), scrut.span, "match scrutinee");
+                let Some(vs) = self.prog.variants(*enum_id).cloned() else {
+                    self.err(Diag::new("E-TYPE", s.span, format!("'{}' is a struct; match works on enums", type_name(*enum_id))));
+                    return;
+                };
+                let got: Vec<&str> = arms.iter().map(|a| a.variant.as_str()).collect();
+                let exp: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
+                if got != exp {
+                    self.err(Diag::new("E-MATCH", s.span, format!("match must list every variant exactly once, in declaration order: {}", exp.join(", "))).hint("there is no wildcard arm; handle each variant explicitly"));
+                }
+                for a in arms {
+                    if a.enum_id != *enum_id {
+                        self.err(Diag::new("E-MATCH", a.span, format!("arm names enum '{}' but the scrutinee is '{}'", type_name(a.enum_id), type_name(*enum_id))));
+                        continue;
+                    }
+                    let vi = vs.iter().position(|v| v.name == a.variant);
+                    self.scopes.push(HashMap::new());
+                    if let Some(vi) = vi {
+                        match (&a.binder, vs[vi].fields.is_empty()) {
+                            (Some(b), false) => self.declare(b, Local { ty: Ty::Payload(*enum_id, vi as u32), mutable: false }, a.span),
+                            (None, true) => {}
+                            (Some(_), true) => self.err(Diag::new("E-MATCH", a.span, format!("variant '{}' has no payload; drop the binder", a.variant))),
+                            (None, false) => self.err(Diag::new("E-MATCH", a.span, format!("variant '{}' has a payload; bind it: {}.{}(name)", a.variant, type_name(*enum_id), a.variant))),
+                        }
+                    }
+                    self.block(&a.body);
+                    self.scopes.pop();
+                }
+            }
             StmtK::While { cond, invs, dec, body } => {
+                if self.ghost_forbid(s, "a loop") {
+                    return;
+                }
                 let t = self.expr(cond, Ctx::Code, false);
                 self.want(t, Ty::Bool, cond.span, "while condition");
                 for i in invs {
@@ -354,11 +519,11 @@ impl<'a> Checker<'a> {
                 (None, Ty::Unit) => {}
                 (None, r) => self.err(Diag::new("E-TYPE", s.span, format!("missing return value of type {}", r.name()))),
                 (Some(e), Ty::Unit) => {
-                    self.expr(e, Ctx::Code, false);
+                    self.expr(e, cx, false);
                     self.err(Diag::new("E-TYPE", s.span, "this function returns unit"));
                 }
                 (Some(e), r) => {
-                    let t = self.expr(e, Ctx::Code, r == Ty::Arr);
+                    let t = self.expr(e, cx, r == Ty::Arr);
                     self.want(t, r, e.span, "return value");
                 }
             },
@@ -367,6 +532,18 @@ impl<'a> Checker<'a> {
                 self.want(t, Ty::Bool, e.span, "assert condition");
             }
             StmtK::Expr(e) => {
+                // A lemma invocation is a ghost statement with spec-context arguments.
+                if let ExprK::Call(name, args) = &e.k {
+                    if self.sigs.get(name).map(|s| s.kind) == Some(FnKind::Lemma) {
+                        self.calls.insert(name.clone());
+                        self.args(name, args, e.span, Ctx::Spec);
+                        return;
+                    }
+                }
+                if self.ghost {
+                    self.err(Diag::new("E-SPEC", s.span, "lemma bodies may only invoke other lemmas"));
+                    return;
+                }
                 if !matches!(e.k, ExprK::Call(..)) {
                     self.err(Diag::new("E-DISCARD", s.span, "expression statements must be calls"));
                 }
@@ -376,14 +553,17 @@ impl<'a> Checker<'a> {
                 }
             }
             StmtK::Par(branches) => {
+                if self.ghost_forbid(s, "par") {
+                    return;
+                }
                 let mut sets = vec![];
                 for b in branches {
                     let ExprK::Call(fname, _) = &b.call.k else {
                         self.err(Diag::new("E-PARSE", b.span, "each 'par' branch must be a single function call"));
                         continue;
                     };
-                    if !matches!(b.ty, Ty::I64 | Ty::Bool) {
-                        self.err(Diag::new("E-TYPE", b.span, "par branches return i64 or bool in v0"));
+                    if matches!(b.ty, Ty::Arr | Ty::Ref | Ty::RefMut | Ty::Unit) {
+                        self.err(Diag::new("E-TYPE", b.span, "par branches return a scalar, struct or enum in v0"));
                     }
                     if fname == "print" || self.sigs.get(fname).map(|s| s.io).unwrap_or(false) {
                         self.err(Diag::new("E-EFFECT", b.span, "par branches must be pure (not io)"));
@@ -413,26 +593,94 @@ impl<'a> Checker<'a> {
     }
 }
 
+impl Program {
+    /// Type of field `f` when assigning through a struct (payloads are immutable).
+    pub fn struct_fields_ty(&self, t: Ty, f: &str) -> Option<Ty> {
+        match t {
+            Ty::Named(id) => self.struct_fields(id)?.iter().find(|x| x.name == f).map(|x| x.ty),
+            _ => None,
+        }
+    }
+}
+
 fn always_returns(b: &Block) -> bool {
     match b.last().map(|s| &s.k) {
         Some(StmtK::Return(_)) => true,
         Some(StmtK::If { then, els: Some(e), .. }) => always_returns(then) && always_returns(e),
+        Some(StmtK::Match { arms, .. }) => arms.iter().all(|a| always_returns(&a.body)),
         _ => false,
     }
 }
 
-pub fn check(funcs: &[Func], need_main: bool) -> Vec<Diag> {
+fn check_types(prog: &Program, diags: &mut Vec<Diag>) {
+    for d in &prog.types {
+        let fields: Vec<&Field> = match &d.kind {
+            TypeKind::Struct(f) => f.iter().collect(),
+            TypeKind::Enum(vs) => {
+                let mut seen = HashSet::new();
+                for v in vs {
+                    if !seen.insert(&v.name) {
+                        diags.push(Diag::new("E-NAME", v.span, format!("duplicate variant '{}'", v.name)));
+                    }
+                }
+                if vs.is_empty() {
+                    diags.push(Diag::new("E-TYPE", d.span, "an enum needs at least one variant"));
+                }
+                vs.iter().flat_map(|v| v.fields.iter()).collect()
+            }
+        };
+        let mut seen = HashSet::new();
+        for f in &fields {
+            if f.ty.is_array() || f.ty == Ty::Unit {
+                diags.push(Diag::new("E-TYPE", f.span, "fields may be i64, bool, or another struct/enum (no arrays yet)"));
+            }
+            if matches!(d.kind, TypeKind::Struct(_)) && !seen.insert(&f.name) {
+                diags.push(Diag::new("E-NAME", f.span, format!("duplicate field '{}'", f.name)));
+            }
+        }
+        // Reject recursive types (they would need heap indirection).
+        let mut stack: Vec<u32> = fields.iter().filter_map(|f| if let Ty::Named(i) = f.ty { Some(i) } else { None }).collect();
+        let mut seen_ids = HashSet::new();
+        while let Some(i) = stack.pop() {
+            if i == d.id {
+                diags.push(Diag::new("E-TYPE", d.span, format!("'{}' contains itself; recursive types are not supported yet", d.name)));
+                break;
+            }
+            if seen_ids.insert(i) {
+                let inner: Vec<&Field> = match &prog.def(i).kind {
+                    TypeKind::Struct(f) => f.iter().collect(),
+                    TypeKind::Enum(vs) => vs.iter().flat_map(|v| v.fields.iter()).collect(),
+                };
+                stack.extend(inner.iter().filter_map(|f| if let Ty::Named(j) = f.ty { Some(j) } else { None }));
+            }
+        }
+    }
+}
+
+pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
+    let funcs = &prog.funcs;
     let sigs = sigs(funcs);
     let mut diags = vec![];
+    check_types(prog, &mut diags);
     let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
     let mut names = HashSet::new();
     for f in funcs {
         if !names.insert(f.name.clone()) || BUILTINS.contains(&f.name.as_str()) {
             diags.push(Diag::new("E-NAME", f.span, format!("function '{}' is already defined", f.name)));
         }
-        let mut c = Checker { sigs: &sigs, f, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new() };
+        let ghost = f.kind != FnKind::Code;
+        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new() };
         for p in &f.params {
+            if ghost && matches!(p.ty, Ty::Arr | Ty::RefMut) {
+                c.err(Diag::new("E-SPEC", p.span, "spec fns and lemmas take arrays only as &[i64]"));
+            }
             c.declare(&p.name, Local { ty: p.ty, mutable: false }, p.span);
+        }
+        match f.kind {
+            FnKind::Lemma if f.ret != Ty::Unit => c.err(Diag::new("E-SPEC", f.span, "lemmas return nothing; state the fact in 'ensures'")),
+            FnKind::Spec if !matches!(f.ret, Ty::I64 | Ty::Bool | Ty::Named(_)) => c.err(Diag::new("E-SPEC", f.span, "spec fns return i64, bool, or a struct/enum")),
+            FnKind::Spec if !f.ensures.is_empty() => c.err(Diag::new("E-SPEC", f.span, "spec fns are definitions; prove facts about them with a lemma instead of 'ensures'")),
+            _ => {}
         }
         for r in &f.requires {
             let t = c.expr(r, Ctx::Spec, false);
@@ -446,10 +694,15 @@ pub fn check(funcs: &[Func], need_main: bool) -> Vec<Diag> {
             let t = c.expr(d, Ctx::Spec, false);
             c.want(t, Ty::I64, d.span, "decreases measure");
         }
-        c.block(&f.body);
+        if f.kind == FnKind::Spec {
+            let StmtK::Return(Some(e)) = &f.body[0].k else { unreachable!() };
+            let t = c.expr(e, Ctx::Spec, false);
+            c.want(t, f.ret, e.span, "spec fn body");
+        } else {
+            c.block(&f.body);
+        }
         if f.ret != Ty::Unit && !always_returns(&f.body) {
-            c.err(Diag::new("E-RETURN", f.span, format!("'{}' may reach the end without returning a {}", f.name, f.ret.name()))
-                .hint("end every path with 'return'"));
+            c.err(Diag::new("E-RETURN", f.span, format!("'{}' may reach the end without returning a {}", f.name, f.ret.name())).hint("end every path with 'return'"));
         }
         if c.calls.contains(&f.name) && f.decreases.is_none() {
             c.err(Diag::new("E-RECURSION", f.span, format!("'{}' is recursive and needs a 'decreases' clause", f.name)));
