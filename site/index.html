@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="claude:viewport-fit-sides" content="cover">
+  <title>Keel</title>
+  <meta name="description" content="Keel is a systems language for AI agents. Every program is proven free of overflow, out-of-bounds access, data races and infinite loops before it compiles to fast C.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container">
+    <a class="logo" href="#top">KEEL</a>
+    <nav aria-label="Sections">
+      <a href="#proofs">Proofs</a>
+      <a href="#speed">Speed</a>
+      <a href="#agents">Agents</a>
+      <a href="#start">Get started</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <div class="hero">
+    <canvas id="rain" aria-hidden="true"></canvas>
+    <div class="container">
+      <h1>KEEL</h1>
+      <p class="tagline">The systems language agents write and <em>a solver proves</em> before it runs.</p>
+      <ul class="facts">
+        <li>Compiles to C</li>
+        <li>Proofs in milliseconds</li>
+        <li>Parallelism without data races</li>
+      </ul>
+      <div class="actions">
+        <a class="button primary" href="#start">Get Keel</a>
+        <a class="button secondary" href="https://github.com/swperb/keel">View on GitHub</a>
+      </div>
+    </div>
+  </div>
+
+  <section class="section" id="proofs">
+    <div class="container">
+      <span class="label">Proofs</span>
+      <h2>If it compiles, it cannot crash.</h2>
+      <p>Keel checks every addition, array index, division, loop and recursive call before compiling. When it can't prove one is safe, it rejects the program and shows the inputs that break it.</p>
+      <div class="columns">
+        <div class="panel">
+          <div class="panel-title"><span>First try</span><span>rejected</span></div>
+<pre><code><span class="kw">fn</span> midpoint(a: <span class="ty">i64</span>, b: <span class="ty">i64</span>) -&gt; <span class="ty">i64</span> {
+  <span class="kw">return</span> (a + b) / 2;
+}
+
+<span class="sh">$</span> keel check midpoint.kl
+<span class="err">error[V-OVERFLOW]: '+' may overflow i64</span>
+<span class="cex">counterexample: a = 9223372036854775807, b = 1</span></code></pre>
+        </div>
+        <div class="panel">
+          <div class="panel-title"><span>Fixed</span><span>proved in 0.01 s</span></div>
+<pre><code><span class="kw">fn</span> midpoint(a: <span class="ty">i64</span>, b: <span class="ty">i64</span>) -&gt; <span class="ty">i64</span>
+  <span class="kw">ensures</span> 2 * <span class="kw">result</span> &lt;= a + b
+       &amp;&amp; a + b &lt;= (2 * <span class="kw">result</span>) + 1
+{ <span class="cm">// halve each side, then add the carry</span> }
+
+<span class="sh">$</span> keel check midpoint.kl
+<span class="ok">keel: 19 obligations proved in 2 functions</span></code></pre>
+        </div>
+      </div>
+      <p class="dim">The <code>ensures</code> line is checked in exact arithmetic, so it holds for every possible input, including the ones no test would try. Proven code needs no runtime checks, so the compiled program carries none.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <span class="label">Parallelism</span>
+      <h2>Split the work. The compiler proves the halves don't touch.</h2>
+      <div class="columns">
+        <div class="panel">
+          <div class="panel-title"><span>msort.kl</span><span>sortedness proven</span></div>
+<pre><code><span class="kw">let</span> mid: <span class="ty">i64</span> = len(xs) / 2;
+<span class="kw">par</span> {
+  msort(&amp;<span class="kw">mut</span> xs[0..mid], &amp;<span class="kw">mut</span> tmp[0..mid]);
+  msort(&amp;<span class="kw">mut</span> xs[mid..len(xs)], &amp;<span class="kw">mut</span> tmp[mid..len(xs)]);
+}
+merge(&amp;<span class="kw">mut</span> xs, &amp;<span class="kw">mut</span> tmp, mid);</code></pre>
+        </div>
+        <div class="panel">
+          <div class="panel-title"><span>One slice off</span><span>rejected</span></div>
+<pre><code><span class="sh">$</span> keel check msort.kl
+<span class="err">error[V-DISJOINT]: borrows of 'tmp' across
+  par branches may overlap (data race)</span>
+<span class="cex">counterexample: len(xs) = 4097, mid = 2048</span></code></pre>
+        </div>
+      </div>
+      <p class="dim">Threads are only started while a core is free. There are no locks or atomics to write, and a data race cannot compile.</p>
+    </div>
+  </section>
+
+  <section class="section" id="speed">
+    <div class="container">
+      <span class="label">Speed</span>
+      <h2>As fast as Rust, measured.</h2>
+      <p>Counting primes below 20 million, same algorithm in both languages, on a 15-core Apple M-series machine:</p>
+      <ul class="bars" aria-label="Wall time, lower is better">
+        <li><span>Rust, one thread</span><span class="bar" style="--share: 1"></span><span class="time">2.72 s</span></li>
+        <li><span>Rust, scoped threads</span><span class="bar" style="--share: 0.074"></span><span class="time">0.20 s</span></li>
+        <li class="ours"><span>Keel, <code>par</code></span><span class="bar" style="--share: 0.085"></span><span class="time">0.23 s</span></li>
+      </ul>
+      <p class="dim">Parallel mergesort of 10 million integers takes 0.12 s in Keel, the same as Rust with rayon. Checking a file takes 0.01 to 0.6 s, fast enough for an agent to re-check after every edit.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <span class="label">No shortcuts</span>
+      <h2>Proofs an agent cannot fake.</h2>
+      <p>The easy way to pass a proof is to weaken what it claims. Keel rejects that.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Shortcut</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Preconditions that contradict each other</td><td><code>V-VACUOUS</code></td></tr>
+            <tr><td>A branch or loop that can never run</td><td><code>V-DEAD</code></td></tr>
+            <tr><td>A lemma whose conclusion does not follow</td><td><code>V-ENSURES</code>, with a counterexample</td></tr>
+            <tr><td>A definition that proves itself in a circle</td><td><code>V-TERMINATION</code></td></tr>
+            <tr><td><code>assume</code>, <code>unsafe</code>, <code>sorry</code></td><td>Not in the language</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">A proof shows the code does what its <code>requires</code> and <code>ensures</code> lines say. It cannot show those lines say what you meant, so read them. They are a few lines, not the whole program.</p>
+    </div>
+  </section>
+
+  <section class="section" id="agents">
+    <div class="container">
+      <span class="label">Agents</span>
+      <h2>Designed for the reader that is not human.</h2>
+      <ul class="features">
+        <li><h3>One way to write it</h3><p>One loop, one conditional, no shadowing, no overloading, no implicit conversions.</p></li>
+        <li><h3>No operator precedence</h3><p><code>a + b * c</code> is an error. Write <code>a + (b * c)</code> and nothing is misread.</p></li>
+        <li><h3>Errors as data</h3><p>Stable codes, <code>--json</code> output, a counterexample and a hint for every failure.</p></li>
+        <li><h3>Learned from one page</h3><p>Haiku, Sonnet and Opus each wrote six verified programs from a one-page primer, first try.</p></li>
+      </ul>
+      <p class="dim">In <a href="https://github.com/swperb/keel/tree/main/evals">our evals</a>, every model passed all hidden tests in both Keel and Rust. The Keel solutions also carried 120 to 151 machine-checked facts each; the Rust ones carried none.</p>
+    </div>
+  </section>
+
+  <section class="section" id="start">
+    <div class="container">
+      <span class="label">Get started</span>
+      <h2>Build it, then point your agent at it.</h2>
+      <div class="columns">
+        <div class="panel">
+          <div class="panel-title"><span>Terminal</span><button class="copy-button" type="button" data-copy="install">copy</button></div>
+<pre><code id="install">brew install z3
+git clone https://github.com/swperb/keel
+cd keel &amp;&amp; cargo build --release
+./target/release/keel run examples/primes.kl</code></pre>
+        </div>
+        <div class="panel">
+          <div class="panel-title"><span>AGENTS.md</span><button class="copy-button" type="button" data-copy="agents">copy</button></div>
+<pre><code id="agents">When writing Keel:
+- learn it from evals/PRIMER.md
+- run `keel check --json` after every edit
+- fix failures using the counterexample
+- never weaken a requires clause to pass</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <span>Keel v0.1, early and changing. <a href="https://github.com/swperb/keel/issues">Report a problem</a>.</span>
+    <span>AGPL-3.0 with an output exception: programs you build with Keel are yours.</span>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
