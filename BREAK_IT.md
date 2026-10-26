@@ -38,8 +38,8 @@ The runtime evidence does not have to be a crash. `keel check` proving
 - **A spec that says the wrong thing.** Keel proves the code meets its
   `requires` and `ensures`. If those lines do not say what you meant, the
   proof is still correct. Weak specs are a design topic, not a soundness bug.
-- **Solver timeouts.** `V-UNKNOWN` on a correct program means the verifier
-  is incomplete, not unsound. Those are welcome as ordinary issues.
+- **Solver budget exhaustion.** `V-UNKNOWN` on a correct program means the
+  verifier is incomplete, not unsound. Those are welcome as ordinary issues.
 - **Stack depth.** Recursion depth is not bounded by the verifier yet. A
   stack overflow from deep recursion is a documented limit.
 - **Running out of memory.** `array(n, fill)` is proven to have
@@ -146,7 +146,7 @@ something the verifier did not model: scope-exit frees, struct copies, the
 ### Anti-vacuity
 
 `V-VACUOUS` and `V-DEAD` are reachability checks: the path condition must be
-satisfiable. They get a 300 ms budget, and an inconclusive answer is
+satisfiable. They get a small fixed solver budget, and an inconclusive answer is
 reported but does not fail the build. A vacuous proof that passes quietly is
 in scope.
 
