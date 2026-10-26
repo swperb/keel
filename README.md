@@ -183,7 +183,8 @@ the pairwise form, which typically proves in under a second.
 
 ## The language
 
-- Types: `i64`, `bool`, structs, enums with payloads, owned arrays `[i64]`, borrows `&[i64]` and `&mut [i64]`.
+- Types: `i64`, `i32`, `i16`, `i8`, `u32`, `u16`, `u8`, `bool`, structs, enums with payloads, owned arrays `[T]`, borrows `&[T]` and `&mut [T]` for any integer `T` (so `[u8]` is a byte buffer).
+- Integers: arithmetic is done in i64 (proven not to overflow it), and storing a value into a narrower type (a `let`, assignment, array element, field, argument or return value) is proven to fit, so no conversion ever truncates. `wrap_u32(e)` (and `wrap_i8`..`wrap_i64`, `wrap_u8`..) reduces `e` modulo 2^N for code that wants wrapping, such as hashes; its `+ - *` may exceed i64. `u64` is not supported yet.
 - Naming: types and variants start uppercase, values start lowercase (enforced; keeps the grammar unambiguous).
 - Structs: `Point { x: 1, y: 2 }` lists every field in declaration order; `p.x = 3;` updates a `var`.
 - Enums: always qualified, `Shape.Circle { r: 5 }`, `Shape.Empty`. `s is Shape.Circle` tests a variant. In specs, `(s as Shape.Circle).r` reads a payload.
@@ -239,7 +240,7 @@ verifier and the C compiler (Lean's is a small proof kernel). If you can get
 a bad program past `keel check`, see [BREAK_IT.md](BREAK_IT.md).
 
 Next, roughly in order:
-1. Sized integers (`u8`..`u64`, `i32`), arrays of any element type, recursive types.
+1. `u64`, arrays of structs, recursive types.
 2. A tuned standard library sort with the same sortedness and permutation guarantees, and faster failure on false multiset claims (today a wrong permutation claim is rejected only after the solver times out, about 13 s).
 3. `old(...)` in ensures, and cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
 4. `keel fmt` as the single canonical layout, and a proof cache keyed by function hash for fast agent iteration.

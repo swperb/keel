@@ -110,7 +110,9 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E-RECURSION" => "Recursive functions need a `decreases` clause. Mutual recursion is not supported in v0.",
         "E-MAIN" => "Programs that are built must define `io fn main()`.",
         "V-OVERFLOW" => "The verifier could not prove this i64 arithmetic stays within [-2^63, 2^63-1]. \
-                         Bound the operands with `requires` or a loop `invariant`.",
+                         Bound the operands with `requires` or a loop `invariant`. \
+                         The same code covers a value stored into a narrower integer type (u8, i32, ...) that may not fit it; \
+                         bound it, or wrap explicitly with wrap_<type>(..).",
         "V-DIVZERO" => "The verifier could not prove the divisor is nonzero.",
         "V-BOUNDS" => "The verifier could not prove the index is within 0 <= i < len(xs).",
         "V-REQUIRES" => "The verifier could not prove the callee's `requires` clause at this call site.",

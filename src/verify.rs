@@ -85,6 +85,12 @@ fn lit(v: i128) -> String {
     }
 }
 
+/// `t` is a value of integer type `k`.
+fn range_of(t: &str, k: IntK) -> String {
+    let (lo, hi) = k.range();
+    format!("(and (<= {} {}) (<= {} {}))", lit(lo), t, t, lit(hi))
+}
+
 fn in_range(t: &str) -> String {
     format!("(and (<= {} {}) (<= {} {}))", lit(I64_MIN), t, t, lit(I64_MAX))
 }
@@ -170,12 +176,14 @@ struct Gen<'a> {
     /// term may mention a bound variable, so it cannot be named by a
     /// top-level constant.
     quant: usize,
+    /// Element type of the array an `array(n, fill)` call is bound to.
+    arr_elem: IntK,
 }
 
 impl<'a> Gen<'a> {
     fn ranges(&self, term: &str, ty: Ty, out: &mut Vec<String>) {
         match ty {
-            Ty::I64 => out.push(in_range(term)),
+            Ty::Int(k) => out.push(range_of(term, k)),
             Ty::Named(id) => match &self.prog.def(id).kind {
                 TypeKind::Struct(fs) => {
                     for f in fs {
@@ -207,6 +215,35 @@ impl<'a> Gen<'a> {
         name
     }
 
+    /// Prove a value stored into a slot of type `ty` fits it. Values are
+    /// computed in i64; only narrower integer types need this. Without it,
+    /// binding the value would assume its range and make the path vacuous.
+    fn fit(&mut self, st: &St, v: &str, ty: Ty, span: Span) {
+        if self.ghost || self.wf {
+            return;
+        }
+        if let Some(k) = ty.narrow() {
+            let (lo, hi) = k.range();
+            let msg = format!("value may not fit in {} ({}..={})", k.name(), lo, hi);
+            self.obl(st, "V-OVERFLOW", span, range_of(v, k), msg, "bound the value with a requires clause, a test or an invariant, or use wrap_<type>(..) for modular arithmetic");
+        }
+    }
+
+    /// The + - * spine of a wrap_<type>(..) argument, unchecked: modular
+    /// arithmetic is exact there (C computes it in uint64_t, and 2^N
+    /// divides 2^64). Every other operator is translated and checked as
+    /// usual.
+    fn ex_ring(&mut self, st: &mut St, e: &Expr, spec: bool) -> String {
+        match &e.k {
+            ExprK::Binary(op @ (BOp::Add | BOp::Sub | BOp::Mul), a, b) => {
+                let (x, y) = (self.ex_ring(st, a, spec), self.ex_ring(st, b, spec));
+                format!("({} {} {})", match op { BOp::Add => "+", BOp::Sub => "-", _ => "*" }, x, y)
+            }
+            ExprK::Unary(UOp::Neg, a) => format!("(- {})", self.ex_ring(st, a, spec)),
+            _ => self.ex(st, e, spec),
+        }
+    }
+
     /// A 64-bit vector naming the bits of integer term `t`.
     fn bits(&mut self, st: &mut St, t: &str) -> String {
         self.n += 1;
@@ -232,7 +269,7 @@ impl<'a> Gen<'a> {
         let mut cex: Vec<(String, String)> = vec![];
         for (k, v) in &st.vars {
             match v.ty {
-                Ty::I64 | Ty::Bool | Ty::Named(_) => cex.push((k.clone(), v.smt.clone())),
+                Ty::Int(_) | Ty::Bool | Ty::Named(_) => cex.push((k.clone(), v.smt.clone())),
                 Ty::Payload(..) | Ty::Unit => {}
                 _ => {
                     if let Some(l) = &v.len {
@@ -288,7 +325,7 @@ impl<'a> Gen<'a> {
                 }
                 let t = format!("(select {} {})", a.smt, iv);
                 if !spec {
-                    st.pc.push(in_range(&t));
+                    st.pc.push(range_of(&t, a.ty.elem().unwrap()));
                 }
                 t
             }
@@ -358,7 +395,25 @@ impl<'a> Gen<'a> {
                             ExprK::Int(m) if m > 0 && m < I64_MAX && (m + 1) & m == 0 => Some(m + 1),
                             _ => None,
                         };
-                        if let (BOp::BitAnd, Some(m)) = (op, low_mask(b).or(low_mask(a))) {
+                        // Packing: when one side is h * 2^k (h << k) and the
+                        // other is in [0, 2^k), their bits do not overlap, so
+                        // | and ^ are exactly addition. Guarded, so exact.
+                        let shifted = |e: &Expr| match &e.k {
+                            ExprK::Binary(BOp::Shl, _, k) => match k.k {
+                                ExprK::Int(k) if (0..63).contains(&k) => Some(1i128 << k),
+                                _ => None,
+                            },
+                            ExprK::Binary(BOp::Mul, x, y) => [x, y].iter().find_map(|z| match z.k {
+                                ExprK::Int(m) if m > 0 && m & (m - 1) == 0 => Some(m),
+                                _ => None,
+                            }),
+                            _ => None,
+                        };
+                        let pack = match op {
+                            BOp::BitOr | BOp::BitXor => shifted(a).map(|m| (m, &bv)).or_else(|| shifted(b).map(|m| (m, &av))),
+                            _ => None,
+                        };
+                        let general = if let (BOp::BitAnd, Some(m)) = (op, low_mask(b).or(low_mask(a))) {
                             let x = if low_mask(b).is_some() { &av } else { &bv };
                             format!("(mod {} {})", x, lit(m))
                         } else if self.quant > 0 {
@@ -373,6 +428,10 @@ impl<'a> Gen<'a> {
                             let x = self.bits(st, &av);
                             let y = self.bits(st, &bv);
                             format!("(k.s64 ({} {} {}))", f, x, y)
+                        };
+                        match pack {
+                            Some((m, lo)) => format!("(ite (and (<= 0 {lo}) (< {lo} {m})) (+ {} {}) {general})", av, bv, lo = lo, m = lit(m), general = general),
+                            None => general,
                         }
                     }
                     BOp::Shl | BOp::Shr => {
@@ -449,7 +508,18 @@ impl<'a> Gen<'a> {
                 format!("(ite {} {} {})", cv, av, bv)
             }
             ExprK::Lit { ty, variant, fields } => {
-                let args: Vec<String> = fields.iter().map(|(_, fe)| self.ex(st, fe, spec)).collect();
+                let decl: Vec<Ty> = match variant {
+                    None => self.prog.struct_fields(*ty).unwrap().iter().map(|f| f.ty).collect(),
+                    Some(v) => self.prog.variants(*ty).unwrap().iter().find(|x| x.name == *v).unwrap().fields.iter().map(|f| f.ty).collect(),
+                };
+                let mut args: Vec<String> = vec![];
+                for ((_, fe), fty) in fields.iter().zip(decl) {
+                    let v = self.ex(st, fe, spec);
+                    if !spec {
+                        self.fit(st, &v, fty, fe.span);
+                    }
+                    args.push(v);
+                }
                 let ctor = match variant {
                     None => type_name(*ty),
                     Some(v) => format!("{}.{}", type_name(*ty), v),
@@ -502,13 +572,20 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn ex_arr(&mut self, st: &mut St, e: &Expr) -> V {
+    /// An array value bound to type `ty` (an `array(..)` call takes its
+    /// element type from there).
+    fn ex_arr(&mut self, st: &mut St, e: &Expr, ty: Ty) -> V {
         match &e.k {
             ExprK::Var(n) => st.vars[n].clone(),
-            ExprK::Call(name, args) => match self.call(st, name, args, e.span, false) {
-                Out::Arr(v) => v,
-                _ => unreachable!("checked"),
-            },
+            ExprK::Call(name, args) => {
+                self.arr_elem = ty.elem().unwrap();
+                let out = self.call(st, name, args, e.span, false);
+                self.arr_elem = IntK::I64;
+                match out {
+                    Out::Arr(v) => V { ty, ..v },
+                    _ => unreachable!("checked"),
+                }
+            }
             _ => unreachable!("checked"),
         }
     }
@@ -538,6 +615,8 @@ impl<'a> Gen<'a> {
             "array" => {
                 let nv = self.ex(st, &args[0], spec);
                 let fill = self.ex(st, &args[1], spec);
+                let elem = std::mem::replace(&mut self.arr_elem, IntK::I64);
+                self.fit(st, &fill, Ty::Int(elem), args[1].span);
                 self.obl(st, "V-ALLOC", span, format!("(and (<= 0 {}) (<= {} {}))", nv, nv, MAX_LEN), "array length may be negative or larger than 2^40".into(), "bound the length with a requires clause");
                 let a = self.fresh("arr", Ty::Arr, st);
                 let len = self.fresh_len("arr", st);
@@ -546,6 +625,16 @@ impl<'a> Gen<'a> {
                 return Out::Arr(V { ty: Ty::Arr, smt: a, len: Some(len) });
             }
             _ => {}
+        }
+        if let Some(k) = crate::check::wrap_kind(name) {
+            let t = self.ex_ring(st, &args[0], spec);
+            let m = lit(1i128 << k.bits());
+            return Out::Scalar(if k.signed() {
+                let h = lit(1i128 << (k.bits() - 1));
+                format!("(- (mod (+ {} {}) {}) {})", t, h, m, h)
+            } else {
+                format!("(mod {} {})", t, m)
+            });
         }
         let g = self.funcs[name];
         // Lemma and spec fn arguments are specifications: no runtime obligations.
@@ -590,11 +679,14 @@ impl<'a> Gen<'a> {
                 flat.push(view.clone());
                 flat.push(vlen.clone());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: view, len: Some(vlen) });
-                if p.ty == Ty::RefMut {
+                if matches!(p.ty, Ty::RefMutOf(_)) {
                     mut_args.push((an.clone(), p.name.clone(), r));
                 }
             } else {
                 let s = self.ex(st, a, arg_spec);
+                if !arg_spec {
+                    self.fit(st, &s, p.ty, a.span);
+                }
                 flat.push(s.clone());
                 cs.vars.insert(p.name.clone(), V { ty: p.ty, smt: s, len: None });
             }
@@ -654,10 +746,10 @@ impl<'a> Gen<'a> {
         }
         let out = match g.ret {
             Ty::Unit => Out::Unit,
-            Ty::Arr => {
+            Ty::ArrOf(_) => {
                 let a = self.fresh("ret", Ty::Arr, st);
                 let len = self.fresh_len("ret", st);
-                let v = V { ty: Ty::Arr, smt: a, len: Some(len) };
+                let v = V { ty: g.ret, smt: a, len: Some(len) };
                 cs.vars.insert("result".into(), v.clone());
                 Out::Arr(v)
             }
@@ -759,11 +851,12 @@ impl<'a> Gen<'a> {
     fn stmt(&mut self, st: &mut St, s: &Stmt) {
         match &s.k {
             StmtK::Let { name, ty, init, .. } => {
-                if *ty == Ty::Arr {
-                    let v = self.ex_arr(st, init);
+                if ty.is_owned_array() {
+                    let v = self.ex_arr(st, init, *ty);
                     st.vars.insert(name.clone(), v);
                 } else {
                     let val = self.ex(st, init, false);
+                    self.fit(st, &val, *ty, init.span);
                     let x = self.fresh(name, *ty, st);
                     st.pc.push(format!("(= {} {})", x, val));
                     st.vars.insert(name.clone(), V { ty: *ty, smt: x, len: None });
@@ -772,6 +865,11 @@ impl<'a> Gen<'a> {
             StmtK::Assign { name, path, val } => {
                 let v = self.ex(st, val, false);
                 let cur = st.vars[name].clone();
+                let mut slot = cur.ty;
+                for f in path {
+                    slot = self.prog.fields_of(slot).and_then(|fs| fs.iter().find(|x| x.name == *f)).map(|x| x.ty).unwrap();
+                }
+                self.fit(st, &v, slot, val.span);
                 let newv = self.update(&cur.smt, cur.ty, path, &v);
                 let x = self.fresh(name, cur.ty, st);
                 st.pc.push(format!("(= {} {})", x, newv));
@@ -792,6 +890,7 @@ impl<'a> Gen<'a> {
                 // Read the array only after the value: evaluating it may have
                 // changed the array (C stores into the array as it is then).
                 let a = st.vars[name].clone();
+                self.fit(st, &vv, Ty::Int(a.ty.elem().unwrap()), val.span);
                 let a2 = self.fresh(name, Ty::Arr, st);
                 st.pc.push(format!("(= {} (store {} {} {}))", a2, a.smt, iv, vv));
                 st.vars.get_mut(name).unwrap().smt = a2;
@@ -869,9 +968,10 @@ impl<'a> Gen<'a> {
             StmtK::Return(e) => {
                 let r = match e {
                     None => None,
-                    Some(e) if self.f.ret == Ty::Arr => Some(self.ex_arr(st, e)),
+                    Some(e) if self.f.ret.is_owned_array() => Some(self.ex_arr(st, e, self.f.ret)),
                     Some(e) => {
                         let v = self.ex(st, e, false);
+                        self.fit(st, &v, self.f.ret, e.span);
                         Some(V { ty: self.f.ret, smt: v, len: None })
                     }
                 };
@@ -1154,7 +1254,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func],
     let specs: Vec<&Func> = if axioms { specs.into_iter().filter(|f| only.map_or(true, |o| o.contains(&f.name))).collect() } else { vec![] };
     for f in &specs {
         // An axiom body sits under the axiom's own quantifier.
-        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new(), quant: 1 };
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new(), quant: 1, arr_elem: IntK::I64 };
         let mut st = St::default();
         let mut binders = vec![];
         let mut flat = vec![];
@@ -1187,7 +1287,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, lifted: &[Func],
 }
 
 fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func) -> (Vec<String>, Vec<Obl>) {
-    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new(), quant: 0 };
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new(), quant: 0, arr_elem: IntK::I64 };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {

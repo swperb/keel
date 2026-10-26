@@ -1,0 +1,5 @@
+// expect: V-OVERFLOW
+fn g(x: u8) -> u8 { return x; }
+fn f() -> u8 {
+  return g(300);
+}

@@ -1,0 +1,5 @@
+// expect: E-TYPE
+fn g(xs: &[i64]) -> i64 { return len(xs); }
+fn f(ys: &[u8]) -> i64 {
+  return g(&ys);
+}

@@ -27,10 +27,10 @@ fn why_not_in(funcs: &HashMap<String, &Func>, name: &str, stack: &mut Vec<String
     if f.io {
         return Some("is io".into());
     }
-    if !matches!(f.ret, Ty::I64 | Ty::Bool | Ty::Named(_)) {
-        return Some("does not return i64, bool or a struct/enum".into());
+    if !matches!(f.ret, Ty::Int(_) | Ty::Bool | Ty::Named(_)) {
+        return Some("does not return an integer, bool or a struct/enum".into());
     }
-    if let Some(p) = f.params.iter().find(|p| !matches!(p.ty, Ty::I64 | Ty::Bool | Ty::Named(_) | Ty::Ref)) {
+    if let Some(p) = f.params.iter().find(|p| !matches!(p.ty, Ty::Int(_) | Ty::Bool | Ty::Named(_) | Ty::RefOf(_))) {
         return Some(format!("takes '{}' as {}, which may be mutated", p.name, p.ty.name()));
     }
     stack.push(name.to_string());

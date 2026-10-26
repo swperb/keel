@@ -1,0 +1,89 @@
+// Sized integers: narrow scalars, byte arrays and modular arithmetic.
+// Arithmetic is done in i64; storing into a narrower type must be proven
+// to fit, and wrap_<type>(..) reduces modulo 2^N when wrapping is wanted.
+
+struct Lane { lo: u16, hi: u16 }
+
+// Issue #2's example.
+fn f(x: u32) -> u32 { return x; }
+
+// FNV-1a over a byte buffer, a 32-bit hash that is meant to wrap.
+fn fnv1a(bytes: &[u8]) -> u32 {
+  var h: u32 = 2166136261;
+  var i: i64 = 0;
+  while i < len(bytes)
+    invariant 0 <= i && i <= len(bytes)
+    decreases len(bytes) - i
+  {
+    h = wrap_u32((h ^ bytes[i]) * 16777619);
+    i = i + 1;
+  }
+  return h;
+}
+
+// Split a 32-bit word into two 16-bit lanes and join them again.
+fn split(w: u32) -> Lane
+  ensures (result.hi * 65536) + result.lo == w
+{
+  return Lane { lo: w & 0xFFFF, hi: w >> 16 };
+}
+
+fn join(l: Lane) -> u32
+  ensures result == (l.hi * 65536) + l.lo
+{
+  return (l.hi << 16) | l.lo;
+}
+
+// Narrow element types in a mutable borrow: a byte histogram.
+fn histogram(data: &[u8], counts: &mut [u32])
+  requires len(counts) == 256 && len(data) <= 1000000
+  requires forall j in 0..256 { counts[j] == 0 }
+{
+  var i: i64 = 0;
+  while i < len(data)
+    invariant 0 <= i && i <= len(data)
+    invariant forall j in 0..256 { 0 <= counts[j] && counts[j] <= i }
+    decreases len(data) - i
+  {
+    let b: u8 = data[i];
+    counts[b] = counts[b] + 1;
+    i = i + 1;
+  }
+}
+
+fn sum_i8(xs: &[i8]) -> i32
+  requires len(xs) <= 1000
+  ensures -128000 <= result && result <= 127000
+{
+  var s: i32 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    invariant -128 * i <= s && s <= 127 * i
+    decreases len(xs) - i
+  {
+    s = s + xs[i];
+    i = i + 1;
+  }
+  return s;
+}
+
+io fn main() {
+  let buf: [u8] = array(3, 0);
+  buf[0] = 107;
+  buf[1] = 101;
+  buf[2] = 108;
+  print(fnv1a(&buf));
+  let l: Lane = split(0xDEADBEEF);
+  print(l.hi);
+  print(l.lo);
+  print(join(l));
+  let counts: [u32] = array(256, 0);
+  histogram(&buf, &mut counts);
+  print(counts[101]);
+  let small: [i8] = array(4, -100);
+  print(sum_i8(&small));
+  print(wrap_u8(250 + 10));
+  print(wrap_i8(127 + 1));
+  print(f(4000000000));
+}

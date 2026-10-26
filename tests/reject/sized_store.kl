@@ -1,0 +1,6 @@
+// expect: V-OVERFLOW
+fn f(xs: &mut [u8])
+  requires len(xs) == 4
+{
+  xs[0] = 256;
+}

@@ -15,35 +15,112 @@ pub struct Span {
     pub col: u32,
 }
 
+/// An integer type. Arithmetic is always done in i64 (and proven not to
+/// overflow it); a value is proven to fit wherever it is stored into a
+/// narrower type, so no conversion ever truncates silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntK {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+}
+
+impl IntK {
+    pub const ALL: [IntK; 7] = [IntK::I8, IntK::I16, IntK::I32, IntK::I64, IntK::U8, IntK::U16, IntK::U32];
+    pub fn name(self) -> &'static str {
+        match self {
+            IntK::I8 => "i8",
+            IntK::I16 => "i16",
+            IntK::I32 => "i32",
+            IntK::I64 => "i64",
+            IntK::U8 => "u8",
+            IntK::U16 => "u16",
+            IntK::U32 => "u32",
+        }
+    }
+    pub fn bits(self) -> u32 {
+        match self {
+            IntK::I8 | IntK::U8 => 8,
+            IntK::I16 | IntK::U16 => 16,
+            IntK::I32 | IntK::U32 => 32,
+            IntK::I64 => 64,
+        }
+    }
+    pub fn signed(self) -> bool {
+        matches!(self, IntK::I8 | IntK::I16 | IntK::I32 | IntK::I64)
+    }
+    /// Inclusive value range.
+    pub fn range(self) -> (i128, i128) {
+        let b = self.bits();
+        if self.signed() {
+            (-(1i128 << (b - 1)), (1i128 << (b - 1)) - 1)
+        } else {
+            (0, (1i128 << b) - 1)
+        }
+    }
+    pub fn cname(self) -> String {
+        format!("{}int{}_t", if self.signed() { "" } else { "u" }, self.bits())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
-    I64,
+    Int(IntK),
     Bool,
     Unit,
-    /// Owned heap array `[i64]`. Freed when its scope ends unless returned.
-    Arr,
-    /// Shared borrow `&[i64]`. Lives only for the duration of a call.
-    Ref,
-    /// Exclusive borrow `&mut [i64]`. Lives only for the duration of a call.
-    RefMut,
+    /// Owned heap array `[T]`. Freed when its scope ends unless returned.
+    ArrOf(IntK),
+    /// Shared borrow `&[T]`. Lives only for the duration of a call.
+    RefOf(IntK),
+    /// Exclusive borrow `&mut [T]`. Lives only for the duration of a call.
+    RefMutOf(IntK),
     /// A user struct or enum, by id into the program's type table.
     Named(u32),
     /// The payload of an enum variant, bound by a match arm: (enum id, variant index).
     Payload(u32, u32),
 }
 
+#[allow(non_upper_case_globals)]
 impl Ty {
+    pub const I64: Ty = Ty::Int(IntK::I64);
+    pub const Arr: Ty = Ty::ArrOf(IntK::I64);
+    pub const Ref: Ty = Ty::RefOf(IntK::I64);
+
     pub fn is_array(self) -> bool {
-        matches!(self, Ty::Arr | Ty::Ref | Ty::RefMut)
+        matches!(self, Ty::ArrOf(_) | Ty::RefOf(_) | Ty::RefMutOf(_))
+    }
+    pub fn is_int(self) -> bool {
+        matches!(self, Ty::Int(_))
+    }
+    pub fn is_owned_array(self) -> bool {
+        matches!(self, Ty::ArrOf(_))
+    }
+    /// The element type of an array or borrow.
+    pub fn elem(self) -> Option<IntK> {
+        match self {
+            Ty::ArrOf(k) | Ty::RefOf(k) | Ty::RefMutOf(k) => Some(k),
+            _ => None,
+        }
+    }
+    /// Integer types narrower than i64, whose values must be proven to fit.
+    pub fn narrow(self) -> Option<IntK> {
+        match self {
+            Ty::Int(k) if k != IntK::I64 => Some(k),
+            _ => None,
+        }
     }
     pub fn name(self) -> String {
         match self {
-            Ty::I64 => "i64".into(),
+            Ty::Int(k) => k.name().into(),
             Ty::Bool => "bool".into(),
             Ty::Unit => "unit".into(),
-            Ty::Arr => "[i64]".into(),
-            Ty::Ref => "&[i64]".into(),
-            Ty::RefMut => "&mut [i64]".into(),
+            Ty::ArrOf(k) => format!("[{}]", k.name()),
+            Ty::RefOf(k) => format!("&[{}]", k.name()),
+            Ty::RefMutOf(k) => format!("&mut [{}]", k.name()),
             Ty::Named(id) => type_name(id),
             Ty::Payload(id, v) => format!("payload of {} variant {}", type_name(id), v),
         }

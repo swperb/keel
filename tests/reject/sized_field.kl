@@ -1,0 +1,5 @@
+// expect: V-OVERFLOW
+struct P { a: u8 }
+fn f(x: i16) -> P {
+  return P { a: x };
+}

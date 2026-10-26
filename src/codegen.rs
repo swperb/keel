@@ -15,39 +15,47 @@ const RUNTIME: &str = r#"#include <stdint.h>
 #include <stdatomic.h>
 #include <unistd.h>
 
-typedef struct { int64_t* data; int64_t len; } kl_arr;
-
-static int64_t* kl_alloc(int64_t n, int64_t fill) {
-    int64_t* p = fill == 0 ? (int64_t*)calloc(n ? (size_t)n : 1, 8) : (int64_t*)malloc((n ? (size_t)n : 1) * 8);
-    if (!p) { fputs("keel: out of memory\n", stderr); exit(70); }
-    if (fill != 0) for (int64_t i = 0; i < n; i++) p[i] = fill;
-    return p;
+/* An owned array of T and its allocator, per element type. */
+#define KL_ARR(T, S) \
+typedef struct { T* data; int64_t len; } klrt_arr##S; \
+static T* klrt_alloc##S(int64_t n, int64_t fill) { \
+    T* p = (T*)calloc(n ? (size_t)n : 1, sizeof(T)); \
+    if (!p) { fputs("keel: out of memory\n", stderr); exit(70); } \
+    if (fill != 0) for (int64_t i = 0; i < n; i++) p[i] = (T)fill; \
+    return p; \
 }
+KL_ARR(int64_t, )
+KL_ARR(int32_t, _i32)
+KL_ARR(int16_t, _i16)
+KL_ARR(int8_t, _i8)
+KL_ARR(uint32_t, _u32)
+KL_ARR(uint16_t, _u16)
+KL_ARR(uint8_t, _u8)
 
 /* par: spawn only while a core is free, otherwise run inline. */
-static atomic_int kl_live = 1;
-static int kl_max = 1;
-static pthread_attr_t kl_attr;
-static void kl_rt_init(void) {
+static atomic_int klrt_live = 1;
+static int klrt_max = 1;
+static pthread_attr_t klrt_attr;
+static void klrt_rt_init(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
-    kl_max = n > 0 ? (int)n : 1;
-    pthread_attr_init(&kl_attr);
-    pthread_attr_setstacksize(&kl_attr, 64u << 20);
+    klrt_max = n > 0 ? (int)n : 1;
+    pthread_attr_init(&klrt_attr);
+    pthread_attr_setstacksize(&klrt_attr, 64u << 20);
 }
-static int kl_spawn(pthread_t* t, void* (*f)(void*), void* a) {
-    int c = atomic_load_explicit(&kl_live, memory_order_relaxed);
-    while (c < kl_max) {
-        if (atomic_compare_exchange_weak(&kl_live, &c, c + 1)) {
-            if (pthread_create(t, &kl_attr, f, a) == 0) return 1;
-            atomic_fetch_sub(&kl_live, 1);
+static int klrt_spawn(pthread_t* t, void* (*f)(void*), void* a) {
+    int c = atomic_load_explicit(&klrt_live, memory_order_relaxed);
+    while (c < klrt_max) {
+        if (atomic_compare_exchange_weak(&klrt_live, &c, c + 1)) {
+            if (pthread_create(t, &klrt_attr, f, a) == 0) return 1;
+            atomic_fetch_sub(&klrt_live, 1);
             break;
         }
     }
     f(a);
     return 0;
 }
-static void kl_join(pthread_t t, int spawned) {
-    if (spawned) { pthread_join(t, NULL); atomic_fetch_sub(&kl_live, 1); }
+static void klrt_join(pthread_t t, int spawned) {
+    if (spawned) { pthread_join(t, NULL); atomic_fetch_sub(&klrt_live, 1); }
 }
 "#;
 
@@ -62,16 +70,27 @@ struct Cg<'a> {
     owned: Vec<Vec<String>>,
     /// Return type of the function being emitted.
     cur_ret: Ty,
+    /// Element type of the array an `array(n, fill)` call is bound to.
+    arr_elem: IntK,
+}
+
+/// Suffix naming the C array struct and allocator for an element type.
+fn arr_suffix(k: IntK) -> String {
+    if k == IntK::I64 {
+        String::new()
+    } else {
+        format!("_{}", k.name())
+    }
 }
 
 fn cty(t: Ty) -> String {
     match t {
-        Ty::I64 => "int64_t".into(),
+        Ty::Int(k) => k.cname(),
         Ty::Bool => "bool".into(),
         Ty::Unit => "void".into(),
         Ty::Named(id) => format!("kt_{}", type_name(id)),
         Ty::Payload(id, v) => format!("kt_{}_v{}", type_name(id), v),
-        _ => "kl_arr".into(),
+        Ty::ArrOf(k) | Ty::RefOf(k) | Ty::RefMutOf(k) => format!("klrt_arr{}", arr_suffix(k)),
     }
 }
 
@@ -120,8 +139,8 @@ fn params_c(f: &Func) -> String {
     let mut v = vec![];
     for p in &f.params {
         match p.ty {
-            Ty::Ref => v.push(format!("const int64_t* restrict k_{0}, int64_t k_{0}_len", p.name)),
-            Ty::RefMut => v.push(format!("int64_t* restrict k_{0}, int64_t k_{0}_len", p.name)),
+            Ty::RefOf(k) => v.push(format!("const {1}* restrict k_{0}, int64_t k_{0}_len", p.name, k.cname())),
+            Ty::RefMutOf(k) => v.push(format!("{1}* restrict k_{0}, int64_t k_{0}_len", p.name, k.cname())),
             t => v.push(format!("{} k_{}", cty(t), p.name)),
         }
     }
@@ -153,11 +172,17 @@ impl<'a> Cg<'a> {
             ExprK::Bool(b) => b.to_string(),
             ExprK::Var(n) => format!("k_{}", n),
             ExprK::Index(n, i) => format!("k_{}[{}]", n, self.ex(i)),
-            ExprK::Unary(UOp::Neg, a) => format!("(-{})", self.ex(a)),
+            ExprK::Unary(UOp::Neg, a) => format!("(-(int64_t){})", self.ex(a)),
             ExprK::Unary(UOp::Not, a) => format!("(!{})", self.ex(a)),
-            ExprK::Unary(UOp::BitNot, a) => format!("(~{})", self.ex(a)),
+            ExprK::Unary(UOp::BitNot, a) => format!("(~(int64_t){})", self.ex(a)),
             ExprK::Binary(op, a, b) => {
                 let (a, b) = (self.ex(a), self.ex(b));
+                // Keel computes in i64. C would compute narrow operands in
+                // int, or in unsigned for u32, so promote every operand.
+                let (a, b) = match op {
+                    BOp::And | BOp::Or | BOp::Implies => (a, b),
+                    _ => (format!("(int64_t){}", a), format!("(int64_t){}", b)),
+                };
                 match op {
                     BOp::Implies => format!("(!{} || {})", a, b),
                     // Shifting a negative value left is undefined in C; the
@@ -229,9 +254,24 @@ impl<'a> Cg<'a> {
             "array" => {
                 let n = self.ex(&args[0]);
                 let fill = self.ex(&args[1]);
-                format!("((kl_arr){{kl_alloc({0}, {1}), {0}}})", n, fill)
+                let s = arr_suffix(self.arr_elem);
+                format!("((klrt_arr{2}){{klrt_alloc{2}({0}, {1}), {0}}})", n, fill, s)
+            }
+            _ if crate::check::wrap_kind(name).is_some() => {
+                let k = crate::check::wrap_kind(name).unwrap();
+                format!("(({})({}))", k.cname(), self.ring(&args[0]))
             }
             _ => format!("kl_{}({})", name, self.args(args).join(", ")),
+        }
+    }
+
+    /// The + - * spine of a wrap_<type>(..) argument in uint64_t, which
+    /// wraps modulo 2^64 and so is exact modulo any narrower 2^N.
+    fn ring(&mut self, e: &Expr) -> String {
+        match &e.k {
+            ExprK::Binary(op @ (BOp::Add | BOp::Sub | BOp::Mul), a, b) => format!("({} {} {})", self.ring(a), op.sym(), self.ring(b)),
+            ExprK::Unary(UOp::Neg, a) => format!("((uint64_t)0 - {})", self.ring(a)),
+            _ => format!("((uint64_t)(int64_t){})", self.ex(e)),
         }
     }
 
@@ -260,12 +300,14 @@ impl<'a> Cg<'a> {
     fn stmt(&mut self, s: &Stmt) {
         match &s.k {
             StmtK::Let { name, ty, init, .. } => {
-                if *ty == Ty::Arr {
+                if let Ty::ArrOf(k) = *ty {
+                    self.arr_elem = k;
                     let v = self.ex(init);
+                    self.arr_elem = IntK::I64;
                     self.tmp += 1;
                     let t = self.tmp;
-                    self.line(&format!("kl_arr t{} = {};", t, v));
-                    self.line(&format!("int64_t* restrict k_{0} = t{1}.data; const int64_t k_{0}_len = t{1}.len;", name, t));
+                    self.line(&format!("{} t{} = {};", cty(*ty), t, v));
+                    self.line(&format!("{2}* restrict k_{0} = t{1}.data; const int64_t k_{0}_len = t{1}.len;", name, t, k.cname()));
                     self.owned.last_mut().unwrap().push(name.clone());
                 } else {
                     let v = self.ex(init);
@@ -331,12 +373,14 @@ impl<'a> Cg<'a> {
                 let t = self.tmp;
                 let keep = match &e.k {
                     ExprK::Var(n) if self.owned.iter().flatten().any(|x| x == n) => {
-                        self.line(&format!("kl_arr r{} = {{k_{1}, k_{1}_len}};", t, n));
+                        self.line(&format!("{} r{} = {{k_{2}, k_{2}_len}};", cty(self.cur_ret), t, n));
                         Some(n.clone())
                     }
                     _ => {
                         let ret = self.cur_ret;
+                        self.arr_elem = ret.elem().unwrap_or(IntK::I64);
                         let v = self.ex(e);
+                        self.arr_elem = IntK::I64;
                         self.line(&format!("{} r{} = {};", cty(ret), t, v));
                         None
                     }
@@ -366,15 +410,15 @@ impl<'a> Cg<'a> {
         for (bi, b) in branches.iter().enumerate() {
             let ExprK::Call(fname, args) = &b.call.k else { unreachable!() };
             let g = self.funcs[fname.as_str()];
-            let sname = format!("kl_par{}_{}", id, bi);
+            let sname = format!("klrt_par{}_{}", id, bi);
             let mut fields = vec![];
             let mut inits = vec![];
             let mut call_args = vec![];
             for (ai, (a, p)) in args.iter().zip(&g.params).enumerate() {
                 match p.ty {
-                    Ty::Ref | Ty::RefMut => {
-                        let q = if p.ty == Ty::Ref { "const " } else { "" };
-                        fields.push(format!("{}int64_t* a{}; int64_t a{}l;", q, ai, ai));
+                    Ty::RefOf(k) | Ty::RefMutOf(k) => {
+                        let q = if matches!(p.ty, Ty::RefOf(_)) { "const " } else { "" };
+                        fields.push(format!("{}{}* a{}; int64_t a{}l;", q, k.cname(), ai, ai));
                         let (ptr, len) = self.borrow(a);
                         inits.push(ptr);
                         inits.push(len);
@@ -409,11 +453,11 @@ impl<'a> Cg<'a> {
         }
         let last = branches.len() - 1;
         for bi in 0..last {
-            self.line(&format!("pthread_t th{0}_{1}; int sp{0}_{1} = kl_spawn(&th{0}_{1}, {2}_run, &p{0}_{1});", id, bi, structs[bi]));
+            self.line(&format!("pthread_t th{0}_{1}; int sp{0}_{1} = klrt_spawn(&th{0}_{1}, {2}_run, &p{0}_{1});", id, bi, structs[bi]));
         }
         self.line(&format!("{}_run(&p{}_{});", structs[last], id, last));
         for bi in 0..last {
-            self.line(&format!("kl_join(th{0}_{1}, sp{0}_{1});", id, bi));
+            self.line(&format!("klrt_join(th{0}_{1}, sp{0}_{1});", id, bi));
         }
         for (bi, b) in branches.iter().enumerate() {
             if let Some(n) = &b.name {
@@ -427,7 +471,7 @@ pub fn emit(prog: &Program) -> String {
     let all = &prog.funcs;
     // Spec fns and lemmas are mathematics: nothing to emit.
     let funcs: Vec<&Func> = all.iter().filter(|f| f.kind == FnKind::Code).collect();
-    let mut cg = Cg { prog, funcs: all.iter().map(|f| (f.name.as_str(), f)).collect(), out: String::new(), thunks: String::new(), ind: 0, tmp: 0, owned: vec![], cur_ret: Ty::Unit };
+    let mut cg = Cg { prog, funcs: all.iter().map(|f| (f.name.as_str(), f)).collect(), out: String::new(), thunks: String::new(), ind: 0, tmp: 0, owned: vec![], cur_ret: Ty::Unit, arr_elem: IntK::I64 };
     let mut protos = String::new();
     for f in &funcs {
         protos += &format!("static {} kl_{}({});\n", cty(f.ret), f.name, params_c(f));
@@ -449,7 +493,7 @@ pub fn emit(prog: &Program) -> String {
     c += "\n";
     c += &cg.out;
     if funcs.iter().any(|f| f.name == "main") {
-        c += "int main(void) {\n    kl_rt_init();\n    kl_main();\n    return 0;\n}\n";
+        c += "int main(void) {\n    klrt_rt_init();\n    kl_main();\n    return 0;\n}\n";
     }
     c
 }

@@ -1,0 +1,2 @@
+// Issue #2: sized integer types.
+fn f(x: u32) -> u32 { return x; }

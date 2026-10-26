@@ -6,7 +6,12 @@ division by zero, every `requires`/`ensures` holds, every loop and recursion
 terminates. If `keel check file.kl` succeeds, those facts are machine-checked.
 
 ## Types and values
-- `i64` (64-bit signed), `bool`. No other integer types, no floats, no strings.
+- Integers `i64`, `i32`, `i16`, `i8`, `u32`, `u16`, `u8`, and `bool`. No floats, no
+  strings, no `u64`. Arithmetic is done in i64; storing into a narrower type
+  (let, assignment, array element, field, argument, return) must be proven to
+  fit. `wrap_u32(e)` etc. reduce modulo 2^N when wrapping is wanted.
+- Arrays of any integer type: `[u8]`, `&[u16]`, `&mut [u32]`; `array(n, fill)`
+  takes its element type from the `let` it is bound to.
 - Bitwise operators `& | ^ ~ << >>` work on `i64` as in C, with `0xFF` and
   `0b1010` literals. Shift amounts must be proven in `0..64`; `>>` rounds
   down (`-5 >> 1 == -3`), unlike `/`. Mixing them with other operators needs

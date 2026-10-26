@@ -16,6 +16,9 @@ expect_run shapes "7 100 12 0 "
 expect_run proofs "3000 "
 expect_run msort "311 1074053543 2147483573 "
 expect_run bits "120 6 90 2176876992 -42 -5 12 "
+expect_run sized "1964367075 57005 48879 3735928559 1 -400 4 -128 4000000000 "
+# Narrow operands are computed in i64, never in C's int or uint32_t.
+expect_run promote "9000000000000000000 -1 -200 "
 # Verification is deterministic: the same file gives byte-identical output.
 a=$($K check examples/msort.kl 2>&1); b=$($K check examples/msort.kl 2>&1)
 if [ "$a" = "$b" ]; then echo "ok   deterministic msort"; else echo "FAIL deterministic msort"; fail=1; fi

@@ -1,0 +1,4 @@
+// expect: V-OVERFLOW
+fn f(x: u16) -> u8 {
+  return x;
+}

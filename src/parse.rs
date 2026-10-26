@@ -243,10 +243,27 @@ impl Parser {
         Ok(TypeDef { id, name, kind, span })
     }
 
-    fn ty(&mut self) -> PResult<Ty> {
+    /// An integer type name, if the next token is one.
+    fn int_ty(&mut self) -> PResult<Option<IntK>> {
         if self.is_kw("i64") {
             self.bump();
-            return Ok(Ty::I64);
+            return Ok(Some(IntK::I64));
+        }
+        if let Tok::Ident(n) = self.peek().clone() {
+            if let Some(k) = IntK::ALL.iter().find(|k| k.name() == n) {
+                self.bump();
+                return Ok(Some(*k));
+            }
+            if n == "u64" {
+                return Err(Diag::new("E-TYPE", self.span(), "u64 is not supported yet: Keel computes in i64, which cannot hold every u64; use i64 with a requires bound, or u32"));
+            }
+        }
+        Ok(None)
+    }
+
+    fn ty(&mut self) -> PResult<Ty> {
+        if let Some(k) = self.int_ty()? {
+            return Ok(Ty::Int(k));
         }
         if self.is_kw("bool") {
             self.bump();
@@ -259,22 +276,24 @@ impl Parser {
                 return Ok(Ty::Named(self.intern(&n, span)));
             }
         }
-        let mut t = Ty::Arr;
+        let mut t: fn(IntK) -> Ty = Ty::ArrOf;
         if self.is_p("&") {
             self.bump();
-            t = Ty::Ref;
+            t = Ty::RefOf;
             if self.is_kw("mut") {
                 self.bump();
-                t = Ty::RefMut;
+                t = Ty::RefMutOf;
             }
         }
         if !self.is_p("[") {
-            return self.err("a type (i64, bool, [i64], &[i64], &mut [i64], or a struct/enum name)");
+            return self.err("a type (i64, i32, i16, i8, u32, u16, u8, bool, [T], &[T], &mut [T], or a struct/enum name)");
         }
         self.bump();
-        self.expect_kw("i64")?;
+        let Some(k) = self.int_ty()? else {
+            return self.err("an integer element type (i64, i32, i16, i8, u32, u16, u8)");
+        };
         self.expect_p("]")?;
-        Ok(t)
+        Ok(t(k))
     }
 
     fn func(&mut self) -> PResult<Func> {
