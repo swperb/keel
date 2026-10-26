@@ -1,0 +1,36 @@
+spec fn total(xs: &[i64], n: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { total(&xs, n - 1) + xs[n - 1] }
+}
+
+fn prefix(xs: &[i64], pre: &mut [i64])
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  requires len(pre) == len(xs) + 1
+  ensures forall k in 0..len(pre) { pre[k] == total(&xs, k) }
+{
+  // write the body here
+}
+
+fn range_sum(xs: &[i64], pre: &[i64], lo: i64, hi: i64) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  requires len(pre) == len(xs) + 1
+  requires forall k in 0..len(pre) { pre[k] == total(&xs, k) }
+  requires 0 <= lo && lo <= hi && hi <= len(xs)
+  ensures result == total(&xs, hi) - total(&xs, lo)
+{
+  // write the body here
+}
+
+fn best_window(xs: &[i64], w: i64) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  ensures (w < 1 || w > len(xs)) ==> result == -9223372036854775808
+  ensures (1 <= w && w <= len(xs)) ==> exists s in 0..((len(xs) - w) + 1) { result == total(&xs, s + w) - total(&xs, s) }
+  ensures (1 <= w && w <= len(xs)) ==> forall s in 0..((len(xs) - w) + 1) { result >= total(&xs, s + w) - total(&xs, s) }
+{
+  // write the body here
+}

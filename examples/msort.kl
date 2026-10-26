@@ -1,7 +1,8 @@
 // Parallel mergesort. The two halves are sorted in parallel through
 // disjoint &mut slices; the verifier proves the slices cannot overlap,
-// every index is in bounds, the recursion terminates, and the result is
-// sorted.
+// every index is in bounds, the recursion terminates, and the result is a
+// sorted permutation of the input: every value occurs exactly as often as
+// before (count is the built-in multiset count).
 
 // xs[0..mid] and xs[mid..len] are each sorted; merge them through tmp.
 fn merge(xs: &mut [i64], tmp: &mut [i64], mid: i64)
@@ -9,6 +10,7 @@ fn merge(xs: &mut [i64], tmp: &mut [i64], mid: i64)
   requires forall a in 0..mid { forall b in a..mid { xs[a] <= xs[b] } }
   requires forall a in mid..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
   ensures forall a in 0..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
 {
   var i: i64 = 0;
   var j: i64 = mid;
@@ -18,6 +20,7 @@ fn merge(xs: &mut [i64], tmp: &mut [i64], mid: i64)
     invariant forall a in 0..k { forall b in a..k { tmp[a] <= tmp[b] } }
     invariant k > 0 && i < mid ==> tmp[k - 1] <= xs[i]
     invariant k > 0 && j < len(xs) ==> tmp[k - 1] <= xs[j]
+    invariant forall v: i64 { count(&tmp, 0, k, v) == count(&xs, 0, i, v) + count(&xs, mid, j, v) }
     decreases len(xs) - k
   {
     if i < mid && (j == len(xs) || xs[i] <= xs[j]) {
@@ -29,10 +32,12 @@ fn merge(xs: &mut [i64], tmp: &mut [i64], mid: i64)
     }
     k = k + 1;
   }
+  assert forall v: i64 { count(&tmp, 0, len(xs), v) == count(&xs, 0, len(xs), v) };
   var t: i64 = 0;
   while t < len(xs)
     invariant 0 <= t && t <= len(xs)
     invariant forall a in 0..t { xs[a] == tmp[a] }
+    invariant forall v: i64 { count(&xs, 0, t, v) == count(&tmp, 0, t, v) }
     decreases len(xs) - t
   {
     xs[t] = tmp[t];
@@ -43,12 +48,14 @@ fn merge(xs: &mut [i64], tmp: &mut [i64], mid: i64)
 fn msort(xs: &mut [i64], tmp: &mut [i64])
   requires len(tmp) == len(xs)
   ensures forall a in 0..len(xs) { forall b in a..len(xs) { xs[a] <= xs[b] } }
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
   decreases len(xs)
 {
   if len(xs) <= 1 {
     return;
   }
   let mid: i64 = len(xs) / 2;
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, mid, v) + count(&xs, mid, len(xs), v) };
   if len(xs) <= 4096 {
     msort(&mut xs[0..mid], &mut tmp[0..mid]);
     msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
@@ -58,6 +65,8 @@ fn msort(xs: &mut [i64], tmp: &mut [i64])
       msort(&mut xs[mid..len(xs)], &mut tmp[mid..len(xs)]);
     }
   }
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == count(&xs, 0, mid, v) + count(&xs, mid, len(xs), v) };
+  assert forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) };
   merge(&mut xs, &mut tmp, mid);
 }
 

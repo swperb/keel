@@ -1,0 +1,6 @@
+// expect: E-SPEC
+fn f(x: i64) -> i64
+  requires old(x) > 0
+{
+  return x;
+}

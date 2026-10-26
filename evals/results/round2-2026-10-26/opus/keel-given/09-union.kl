@@ -1,0 +1,90 @@
+fn union(a: &[i64], b: &[i64], out: &mut [i64]) -> i64
+  requires len(a) <= 1_000_000 && len(b) <= 1_000_000
+  requires len(out) == len(a) + len(b)
+  requires forall i in 0..len(a) { forall j in i..len(a) { a[i] <= a[j] } }
+  requires forall i in 0..len(b) { forall j in i..len(b) { b[i] <= b[j] } }
+  ensures 0 <= result && result <= len(out)
+  ensures forall s in 0..result { forall t in (s + 1)..result { out[s] < out[t] } }
+  ensures forall i in 0..len(a) { exists t in 0..result { out[t] == a[i] } }
+  ensures forall j in 0..len(b) { exists t in 0..result { out[t] == b[j] } }
+  ensures forall t in 0..result { (exists i in 0..len(a) { a[i] == out[t] }) || (exists j in 0..len(b) { b[j] == out[t] }) }
+{
+  let la: i64 = len(a);
+  let lb: i64 = len(b);
+  let pa: [i64] = array(la, 0);
+  let pb: [i64] = array(lb, 0);
+  let src: [i64] = array(la + lb, 0);
+  var w: i64 = 0;
+  var i: i64 = 0;
+  var j: i64 = 0;
+  while i < la || j < lb
+    invariant 0 <= i && i <= la && 0 <= j && j <= lb
+    invariant 0 <= w && w <= i + j
+    invariant len(out) == la + lb && len(pa) == la && len(pb) == lb && len(src) == la + lb
+    invariant (i + j > 0) ==> w > 0
+    invariant w > 0 ==> (i < la ==> out[w - 1] <= a[i])
+    invariant w > 0 ==> (j < lb ==> out[w - 1] <= b[j])
+    invariant forall s in 0..w { forall t in (s + 1)..w { out[s] < out[t] } }
+    invariant forall k in 0..i { 0 <= pa[k] && pa[k] < w && out[pa[k]] == a[k] }
+    invariant forall k in 0..j { 0 <= pb[k] && pb[k] < w && out[pb[k]] == b[k] }
+    invariant forall t in 0..w { (0 <= src[t] && src[t] < la && a[src[t]] == out[t]) || (la <= src[t] && src[t] < la + lb && b[src[t] - la] == out[t]) }
+    decreases (la - i) + (lb - j)
+  {
+    var takea: bool = false;
+    if i < la {
+      if j < lb {
+        takea = a[i] <= b[j];
+      } else {
+        takea = true;
+      }
+    }
+    if takea {
+      let va: i64 = a[i];
+      if i + 1 < la {
+        assert va <= a[i + 1];
+      }
+      var fa: bool = true;
+      if w > 0 {
+        if va == out[w - 1] {
+          fa = false;
+        }
+      }
+      if fa {
+        if w > 0 {
+          assert forall s in 0..w { out[s] <= out[w - 1] };
+          assert forall s in 0..w { out[s] < va };
+        }
+        out[w] = va;
+        src[w] = i;
+        w = w + 1;
+      }
+      pa[i] = w - 1;
+      i = i + 1;
+    } else {
+      let vb: i64 = b[j];
+      if j + 1 < lb {
+        assert vb <= b[j + 1];
+      }
+      var fb: bool = true;
+      if w > 0 {
+        if vb == out[w - 1] {
+          fb = false;
+        }
+      }
+      if fb {
+        if w > 0 {
+          assert forall s in 0..w { out[s] <= out[w - 1] };
+          assert forall s in 0..w { out[s] < vb };
+        }
+        out[w] = vb;
+        src[w] = la + j;
+        w = w + 1;
+      }
+      pb[j] = w - 1;
+      j = j + 1;
+    }
+  }
+  assert forall k in 0..la { out[pa[k]] == a[k] };
+  assert forall k in 0..lb { out[pb[k]] == b[k] };
+  return w;
+}

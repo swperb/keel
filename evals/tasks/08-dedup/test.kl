@@ -1,0 +1,72 @@
+io fn show(xs: &[i64], n: i64)
+  requires 0 <= n && n <= len(xs)
+{
+  print(n);
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    decreases n - i
+  {
+    print(xs[i]);
+    i = i + 1;
+  }
+}
+
+io fn main() {
+  let e: [i64] = array(0, 0);
+  let eo: [i64] = array(0, 0);
+  let r0: i64 = dedup(&mut e, &eo);
+  show(&e, r0);
+  let one: [i64] = array(1, -9223372036854775808);
+  let oneo: [i64] = array(1, -9223372036854775808);
+  let r1: i64 = dedup(&mut one, &oneo);
+  show(&one, r1);
+  let same: [i64] = array(1_000_000, 7);
+  let sameo: [i64] = array(1_000_000, 7);
+  let r2: i64 = dedup(&mut same, &sameo);
+  show(&same, r2);
+  let a: [i64] = array(9, 0);
+  let ao: [i64] = array(9, 0);
+  a[0] = -9223372036854775808;
+  a[1] = -9223372036854775808;
+  a[2] = -5;
+  a[3] = 0;
+  a[4] = 0;
+  a[5] = 0;
+  a[6] = 3;
+  a[7] = 9223372036854775807;
+  a[8] = 9223372036854775807;
+  ao[0] = -9223372036854775808;
+  ao[1] = -9223372036854775808;
+  ao[2] = -5;
+  ao[3] = 0;
+  ao[4] = 0;
+  ao[5] = 0;
+  ao[6] = 3;
+  ao[7] = 9223372036854775807;
+  ao[8] = 9223372036854775807;
+  let r3: i64 = dedup(&mut a, &ao);
+  show(&a, r3);
+  let b: [i64] = array(4, 0);
+  let bo: [i64] = array(4, 0);
+  b[0] = 1;
+  b[1] = 2;
+  b[2] = 3;
+  b[3] = 4;
+  bo[0] = 1;
+  bo[1] = 2;
+  bo[2] = 3;
+  bo[3] = 4;
+  let r4: i64 = dedup(&mut b, &bo);
+  show(&b, r4);
+  let c: [i64] = array(3, 0);
+  let co: [i64] = array(3, 0);
+  c[0] = 1;
+  c[1] = 2;
+  c[2] = 2;
+  co[0] = 1;
+  co[1] = 2;
+  co[2] = 2;
+  let r5: i64 = dedup(&mut c, &co);
+  show(&c, r5);
+}

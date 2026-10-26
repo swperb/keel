@@ -19,6 +19,44 @@ use crate::diag::Diag;
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether the program uses the built-in `count`; its theory is only sent
+/// to the solver when needed.
+static USES_COUNT: AtomicBool = AtomicBool::new(false);
+
+fn uses_count() -> bool {
+    USES_COUNT.load(Ordering::Relaxed)
+}
+
+/// The built-in multiset theory behind `count(&xs, lo, hi, v)`: the number
+/// of indices i in [lo, hi) with xs[i] == v. Its definition unfolds through
+/// a fuel argument (two steps per use), which keeps the solver out of
+/// matching loops; the remaining axioms are standard lemmas about it
+/// (splitting a range, a single store), trusted like the solver itself.
+const COUNT_DECLS: &str = "(declare-datatypes ((K.Fuel 0)) (((K.Z) (K.S (K.prev K.Fuel)))))
+(declare-fun kcount (K.Fuel (Array Int Int) Int Int Int) Int)
+";
+
+const COUNT_THEORY: &str = "(assert (forall ((f K.Fuel) (a (Array Int Int)) (l Int) (h Int) (v Int))
+  (! (= (kcount (K.S f) a l h v) (kcount f a l h v)) :pattern ((kcount (K.S f) a l h v)))))
+(assert (forall ((f K.Fuel) (a (Array Int Int)) (l Int) (h Int) (v Int))
+  (! (= (kcount (K.S f) a l h v)
+        (ite (< l h) (+ (kcount f a l (- h 1) v) (ite (= (select a (- h 1)) v) 1 0)) 0))
+     :pattern ((kcount (K.S f) a l h v)))))
+(assert (forall ((a (Array Int Int)) (l Int) (h Int) (v Int))
+  (! (and (>= (kcount K.Z a l h v) 0) (=> (<= h l) (= (kcount K.Z a l h v) 0)))
+     :pattern ((kcount K.Z a l h v)))))
+(assert (forall ((a (Array Int Int)) (l Int) (m Int) (h Int) (v Int))
+  (! (=> (and (<= l m) (<= m h)) (= (kcount K.Z a l h v) (+ (kcount K.Z a l m v) (kcount K.Z a m h v))))
+     :pattern ((kcount K.Z a l m v) (kcount K.Z a m h v)))))
+(assert (forall ((a (Array Int Int)) (i Int) (x Int) (l Int) (h Int) (v Int))
+  (! (= (kcount K.Z (store a i x) l h v)
+        (ite (and (<= l i) (< i h))
+             (+ (- (kcount K.Z a l h v) (ite (= (select a i) v) 1 0)) (ite (= x v) 1 0))
+             (kcount K.Z a l h v)))
+     :pattern ((kcount K.Z (store a i x) l h v)))))
+";
 
 const I64_MIN: i128 = i64::MIN as i128;
 const I64_MAX: i128 = i64::MAX as i128;
@@ -111,6 +149,8 @@ struct Gen<'a> {
     ghost: bool,
     /// Checking a spec fn body: calls to spec fns must meet their requires.
     wf: bool,
+    /// Variables on entry, for `old(..)`. At a call site, the callee's pre-state.
+    entry: HashMap<String, V>,
 }
 
 impl<'a> Gen<'a> {
@@ -157,6 +197,9 @@ impl<'a> Gen<'a> {
     }
 
     fn obl(&mut self, st: &St, code: &'static str, span: Span, goal: String, msg: String, hint: &'static str) {
+        // Goals unfold `count` twice; the resulting fuel-zero terms are the
+        // ones assumptions are stated over, so the two meet in the e-graph.
+        let goal = goal.replace("(kcount K.Z ", "(kcount (K.S (K.S K.Z)) ");
         let mut cex: Vec<(String, String)> = vec![];
         for (k, v) in &st.vars {
             match v.ty {
@@ -272,16 +315,30 @@ impl<'a> Gen<'a> {
                     BOp::Implies => arith("=>"),
                 }
             }
-            ExprK::Quant { forall, var, lo, hi, body } => {
-                let lv = self.ex(st, lo, true);
-                let hv = self.ex(st, hi, true);
+            ExprK::Old(inner) => {
+                // Evaluate in the entry state; names bound since (quantifier
+                // variables) are carried over.
+                let mut pre = St { vars: self.entry.clone(), pc: vec![], done: false };
+                for (k, v) in &st.vars {
+                    pre.vars.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                self.ex(&mut pre, inner, true)
+            }
+            ExprK::Quant { forall, var, range, body } => {
+                let bounds = match range {
+                    Some((lo, hi)) => Some((self.ex(st, lo, true), self.ex(st, hi, true))),
+                    None => None,
+                };
                 self.n += 1;
                 let q = format!("q.{}.{}", var, self.n);
                 // Also a constant, so obligations raised inside the body (spec
                 // fn calls) hold for an arbitrary in-range value of the variable.
                 self.decls.push(format!("(declare-const {} Int)", q));
                 st.vars.insert(var.clone(), V { ty: Ty::I64, smt: q.clone(), len: None });
-                let range = format!("(and (<= {} {}) (< {} {}))", lv, q, q, hv);
+                let range = match bounds {
+                    Some((lv, hv)) => format!("(and (<= {} {}) (< {} {}))", lv, q, q, hv),
+                    None => in_range(&q),
+                };
                 let bv = self.ex_under(st, &range, body, true);
                 st.vars.remove(var);
                 if *forall {
@@ -363,6 +420,15 @@ impl<'a> Gen<'a> {
 
     fn call(&mut self, st: &mut St, name: &str, args: &[Expr], span: Span, spec: bool) -> Out {
         match name {
+            "count" => {
+                let ExprK::Borrow { name: an, .. } = &args[0].k else { unreachable!("checked") };
+                let arr = st.vars[an].smt.clone();
+                let lo = self.ex(st, &args[1], true);
+                let hi = self.ex(st, &args[2], true);
+                let v = self.ex(st, &args[3], true);
+                // Facts use fuel zero; obl() gives goals two unfoldings.
+                return Out::Scalar(format!("(kcount K.Z {} {} {} {})", arr, lo, hi, v));
+            }
             "len" => {
                 let key = match &args[0].k {
                     ExprK::Var(n) => n.as_str(),
@@ -412,7 +478,15 @@ impl<'a> Gen<'a> {
                             format!("slice of '{}' may be out of range", an),
                             "prove 0 <= lo <= hi <= len(array) for the slice bounds",
                         );
-                        let view = format!("(lambda ((i Int)) (select {} (+ i {})))", v.smt, lv);
+                        // Name the view so facts about it can be stated and matched.
+                        let view = self.fresh(&format!("{}.view", an), Ty::Arr, st);
+                        st.pc.push(format!("(= {} (lambda ((i Int)) (select {} (+ i {}))))", view, v.smt, lv));
+                        if uses_count() {
+                            st.pc.push(format!(
+                                "(forall ((l Int) (h Int) (v Int)) (! (= (kcount K.Z {} l h v) (kcount K.Z {} (+ l {}) (+ h {}) v)) :pattern ((kcount K.Z {} l h v))))",
+                                view, v.smt, lv, lv, view
+                            ));
+                        }
                         (view, format!("(- {} {})", hv, lv), Some((lv, hv)))
                     }
                 };
@@ -434,6 +508,8 @@ impl<'a> Gen<'a> {
         if let Some(pb) = &mut self.par_borrows {
             pb.extend(borrowed);
         }
+        // The callee's pre-state, for `old(..)` in its ensures.
+        let pre_call = cs.vars.clone();
         let check_pre = g.kind != FnKind::Spec || self.wf;
         if check_pre {
             for r in &g.requires {
@@ -469,6 +545,12 @@ impl<'a> Gen<'a> {
                         "(= {} (lambda ((i Int)) (ite (and (<= {} i) (< i {})) (select {} (- i {})) (select {} i))))",
                         a2, lo, hi, post, lo, old
                     ));
+                    if uses_count() {
+                        st.pc.push(format!(
+                            "(forall ((l Int) (h Int) (v Int)) (! (and (=> (<= h {lo}) (= (kcount K.Z {a2} l h v) (kcount K.Z {old} l h v))) (=> (<= {hi} l) (= (kcount K.Z {a2} l h v) (kcount K.Z {old} l h v))) (=> (and (<= {lo} l) (<= h {hi})) (= (kcount K.Z {a2} l h v) (kcount K.Z {post} (- l {lo}) (- h {lo}) v)))) :pattern ((kcount K.Z {a2} l h v))))",
+                            lo = lo, hi = hi, a2 = a2, old = old, post = post
+                        ));
+                    }
                     st.vars.get_mut(&an).unwrap().smt = a2;
                 }
             }
@@ -488,10 +570,12 @@ impl<'a> Gen<'a> {
                 Out::Scalar(r)
             }
         };
+        let saved = std::mem::replace(&mut self.entry, pre_call);
         for en in &g.ensures {
             let fact = self.ex(&mut cs, en, true);
             st.pc.push(fact);
         }
+        self.entry = saved;
         out
     }
 
@@ -822,6 +906,14 @@ const PRELUDE: &str = "(set-option :produce-models true)
 /// enums, and spec fns with their definitional axioms.
 fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) -> String {
     let mut s = String::from(PRELUDE);
+    if uses_count() {
+        s += COUNT_DECLS;
+        // Without axioms (spec fn checking, and the retry pass), count is an
+        // uninterpreted function: weaker, never unsound.
+        if axioms {
+            s += COUNT_THEORY;
+        }
+    }
     if !prog.types.is_empty() {
         let heads: Vec<String> = prog.types.iter().map(|d| format!("({} 0)", d.name)).collect();
         let bodies: Vec<String> = prog
@@ -863,7 +955,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
     // definition can never vouch for its own well-formedness.
     let specs: Vec<&Func> = if axioms { specs } else { vec![] };
     for f in &specs {
-        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false };
+        let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: true, wf: false, entry: HashMap::new() };
         let mut st = St::default();
         let mut binders = vec![];
         let mut flat = vec![];
@@ -896,7 +988,7 @@ fn shared_prelude(prog: &Program, map: &HashMap<String, &Func>, axioms: bool) ->
 }
 
 fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Func) -> (Vec<String>, Vec<Obl>) {
-    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec };
+    let mut g = Gen { prog, funcs: map, f, decls: vec![], obls: vec![], n: 0, dec_entry: None, par_borrows: None, ghost: f.kind == FnKind::Lemma, wf: f.kind == FnKind::Spec, entry: HashMap::new() };
     let mut st = St::default();
     for p in &f.params {
         if p.ty.is_array() {
@@ -908,6 +1000,7 @@ fn gen_func<'a>(prog: &'a Program, map: &'a HashMap<String, &'a Func>, f: &'a Fu
             st.vars.insert(p.name.clone(), V { ty: p.ty, smt: x, len: None });
         }
     }
+    g.entry = st.vars.clone();
     for r in &f.requires {
         let fact = g.ex(&mut st, r, true);
         st.pc.push(fact);
@@ -1091,8 +1184,13 @@ pub fn z3_path() -> String {
 }
 
 fn run_z3(script: &str) -> Result<String, String> {
+    run_z3_timeout(script, 10000)
+}
+
+fn run_z3_timeout(script: &str, ms: u32) -> Result<String, String> {
+    let t = format!("-t:{}", ms);
     let mut child = Command::new(z3_path())
-        .args(["-in", "-smt2", "-t:10000"])
+        .args(["-in", "-smt2", t.as_str()])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1105,6 +1203,7 @@ fn run_z3(script: &str) -> Result<String, String> {
 
 pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String> {
     let funcs = &prog.funcs;
+    USES_COUNT.store(format!("{:?}", funcs).contains("Call(\"count\""), Ordering::Relaxed);
     let map: HashMap<String, &Func> = funcs.iter().map(|f| (f.name.clone(), f)).collect();
     // Phase 1: spec fn definitions (no axioms). Phase 2: everything else,
     // only once every definition is known to be well-founded.
@@ -1162,7 +1261,7 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
                     if pick.is_empty() {
                         (HashMap::new(), None)
                     } else {
-                        run_z3(&build_script(bare, d, o, pick, true)).map(|out| (parse_results(&out), solver_error(&out))).unwrap_or_default()
+                        run_z3_timeout(&build_script(bare, d, o, pick, true), 3000).map(|out| (parse_results(&out), solver_error(&out))).unwrap_or_default()
                     }
                 })
             })

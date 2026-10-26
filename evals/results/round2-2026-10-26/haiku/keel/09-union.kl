@@ -1,0 +1,38 @@
+fn union(a: &[i64], b: &[i64], out: &mut [i64]) -> i64
+  requires len(out) == len(a) + len(b)
+  requires len(a) <= 1000000
+  requires len(b) <= 1000000
+  requires forall k in 0..len(a) - 1 { a[k] <= a[k + 1] }
+  requires forall k in 0..len(b) - 1 { b[k] <= b[k + 1] }
+  ensures result >= 0 && result <= len(out)
+{
+  let na: i64 = len(a);
+  let nb: i64 = len(b);
+  var i: i64 = 0;
+  var j: i64 = 0;
+  var r: i64 = 0;
+  while i < na || j < nb
+    invariant 0 <= i && i <= na
+    invariant 0 <= j && j <= nb
+    invariant 0 <= r && r <= i + j
+    decreases (na - i) + (nb - j)
+  {
+    var fromA: bool = i < na && (j >= nb || a[i] <= b[j]);
+    var c: i64 = 0;
+    if fromA {
+      c = a[i];
+    } else {
+      c = b[j];
+    }
+    if r == 0 || out[r - 1] != c {
+      out[r] = c;
+      r = r + 1;
+    }
+    if fromA {
+      i = i + 1;
+    } else {
+      j = j + 1;
+    }
+  }
+  return r;
+}

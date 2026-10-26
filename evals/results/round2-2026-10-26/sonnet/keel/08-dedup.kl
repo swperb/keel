@@ -1,0 +1,38 @@
+fn dedup(xs: &mut [i64], orig: &[i64]) -> i64
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1_000_000
+  requires forall i in 0..len(xs) { orig[i] == xs[i] }
+  requires forall i in 0..len(xs) { forall j in 0..len(xs) { i <= j ==> orig[i] <= orig[j] } }
+  ensures 0 <= result && result <= len(xs)
+  ensures len(xs) == 0 ==> result == 0
+  ensures len(xs) > 0 ==> result >= 1
+  ensures forall k in 0..result { forall m in 0..result { k < m ==> xs[k] < xs[m] } }
+  ensures forall k in 0..result { exists m in 0..len(xs) { orig[m] == xs[k] } }
+  ensures forall m in 0..len(xs) { exists k in 0..result { xs[k] == orig[m] } }
+{
+  let n: i64 = len(xs);
+  if n == 0 {
+    return 0;
+  }
+  var r: i64 = 1;
+  var i: i64 = 1;
+  while i < n
+    invariant 1 <= r && r <= i && i <= n
+    invariant len(xs) == n
+    invariant len(orig) == n
+    invariant forall k in i..n { xs[k] == orig[k] }
+    invariant forall k in 0..r { forall m in 0..r { k < m ==> xs[k] < xs[m] } }
+    invariant xs[r - 1] == orig[i - 1]
+    invariant forall k in 0..r { exists m in 0..i { orig[m] == xs[k] } }
+    invariant forall m in 0..i { exists k in 0..r { xs[k] == orig[m] } }
+    invariant forall i2 in 0..n { forall j2 in 0..n { i2 <= j2 ==> orig[i2] <= orig[j2] } }
+    decreases n - i
+  {
+    if xs[i] != xs[r - 1] {
+      xs[r] = xs[i];
+      r = r + 1;
+    }
+    i = i + 1;
+  }
+  return r;
+}

@@ -49,9 +49,11 @@ struct Checker<'a> {
     /// a larger expression could run before or after its neighbours read
     /// the same array.
     top: *const Expr,
+    /// `old(..)` is meaningful here (ensures, and invariants/asserts in a body).
+    old_ok: bool,
 }
 
-const BUILTINS: &[&str] = &["len", "array", "print"];
+const BUILTINS: &[&str] = &["len", "array", "print", "count"];
 
 impl<'a> Checker<'a> {
     fn err(&mut self, d: Diag) {
@@ -186,14 +188,22 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            ExprK::Quant { var, lo, hi, body, .. } => {
+            ExprK::Old(inner) => {
+                if ctx == Ctx::Code || !self.old_ok {
+                    self.err(Diag::new("E-SPEC", e.span, "old(..) is only allowed in ensures, loop invariants and asserts"));
+                }
+                self.expr(inner, ctx, false)
+            }
+            ExprK::Quant { var, range, body, .. } => {
                 if ctx == Ctx::Code {
                     self.err(Diag::new("E-SPEC", e.span, "quantifiers are only allowed in specifications"));
                 }
-                let tl = self.expr(lo, ctx, false);
-                let th = self.expr(hi, ctx, false);
-                self.want(tl, Ty::I64, lo.span, "quantifier bound");
-                self.want(th, Ty::I64, hi.span, "quantifier bound");
+                if let Some((lo, hi)) = range {
+                    let tl = self.expr(lo, ctx, false);
+                    let th = self.expr(hi, ctx, false);
+                    self.want(tl, Ty::I64, lo.span, "quantifier bound");
+                    self.want(th, Ty::I64, hi.span, "quantifier bound");
+                }
                 self.scopes.push(HashMap::new());
                 self.declare(var, Local { ty: Ty::I64, mutable: false }, e.span);
                 let tb = self.expr(body, ctx, false);
@@ -275,6 +285,27 @@ impl<'a> Checker<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], span: Span, ctx: Ctx) -> Ty {
+        if name == "count" {
+            // count(&xs, lo, hi, v): occurrences of v in xs[lo..hi]; specifications only.
+            if ctx == Ctx::Code {
+                self.err(Diag::new("E-SPEC", span, "count(..) is a specification function; use it in contracts, invariants and asserts"));
+            }
+            if args.len() != 4 {
+                self.err(Diag::new("E-TYPE", span, "count takes (&xs, lo, hi, v)"));
+                return Ty::I64;
+            }
+            match &args[0].k {
+                ExprK::Borrow { name, mutable: false, range: None } => {
+                    self.array_var(name, args[0].span);
+                }
+                _ => self.err(Diag::new("E-TYPE", args[0].span, "count's first argument is a shared borrow of an array, e.g. &xs")),
+            }
+            for a in &args[1..] {
+                let t = self.expr(a, ctx, false);
+                self.want(t, Ty::I64, a.span, "count argument");
+            }
+            return Ty::I64;
+        }
         if name == "len" {
             if args.len() != 1 {
                 self.err(Diag::new("E-TYPE", span, "len takes exactly one array"));
@@ -720,7 +751,7 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
             diags.push(Diag::new("E-NAME", f.span, format!("function '{}' is already defined", f.name)));
         }
         let ghost = f.kind != FnKind::Code;
-        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null() };
+        let mut c = Checker { prog, sigs: &sigs, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false };
         for p in &f.params {
             if p.ty == Ty::Arr {
                 c.err(Diag::new("E-TYPE", p.span, format!("parameter '{}' cannot own an array; take &[i64] or &mut [i64]", p.name)));
@@ -747,15 +778,18 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
         if c.calls.contains(&f.name) {
             c.err(Diag::new("E-RECURSION", f.span, format!("'{}' calls itself in its own requires or decreases", f.name)).hint("state the precondition without the function being defined"));
         }
+        c.old_ok = f.kind == FnKind::Code;
         for r in &f.ensures {
             let t = c.expr(r, Ctx::Ensures, false);
             c.want(t, Ty::Bool, r.span, "ensures clause");
         }
+        c.old_ok = false;
         if f.kind == FnKind::Spec {
             let StmtK::Return(Some(e)) = &f.body[0].k else { unreachable!() };
             let t = c.expr(e, Ctx::Spec, false);
             c.want(t, f.ret, e.span, "spec fn body");
         } else {
+            c.old_ok = f.kind == FnKind::Code;
             c.block(&f.body);
         }
         if f.ret != Ty::Unit && !always_returns(&f.body) {

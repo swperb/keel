@@ -1,0 +1,36 @@
+io fn main() {
+  let xs: [i64] = array(6, 0);
+  xs[0] = 3;
+  xs[1] = -1;
+  xs[2] = -1_000_000_000;
+  xs[3] = 4;
+  xs[4] = 1_000_000_000;
+  xs[5] = -2;
+  let pre: [i64] = array(7, -1);
+  prefix(&xs, &mut pre);
+  var i: i64 = 0;
+  while i < 7
+    invariant 0 <= i && i <= 7
+    decreases 7 - i
+  {
+    print(pre[i]);
+    i = i + 1;
+  }
+  print(range_sum(&xs, &pre, 0, 6));
+  print(range_sum(&xs, &pre, 2, 2));
+  print(range_sum(&xs, &pre, 1, 4));
+  print(best_window(&xs, 1));
+  print(best_window(&xs, 2));
+  print(best_window(&xs, 6));
+  print(best_window(&xs, 0));
+  print(best_window(&xs, 7));
+  print(best_window(&xs, -9223372036854775808));
+  let e: [i64] = array(0, 0);
+  print(best_window(&e, 0));
+  print(best_window(&e, 1));
+  let neg: [i64] = array(5, -1_000_000_000);
+  print(best_window(&neg, 2));
+  let big: [i64] = array(1_000_000, 1_000_000_000);
+  print(best_window(&big, 1_000_000));
+  print(best_window(&big, 999_999));
+}

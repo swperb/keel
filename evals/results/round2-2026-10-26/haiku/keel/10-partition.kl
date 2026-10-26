@@ -1,0 +1,37 @@
+fn partition(xs: &mut [i64], p: i64, orig: &[i64]) -> i64
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1000000
+  ensures result >= 0 && result <= len(xs)
+{
+  let n: i64 = len(xs);
+  var c: i64 = 0;
+  var g: i64 = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant 0 <= c && 0 <= g && c + g == i
+    decreases n - i
+  {
+    if orig[i] < p {
+      xs[c] = orig[i];
+      c = c + 1;
+    } else {
+      g = g + 1;
+    }
+    i = i + 1;
+  }
+  var d: i64 = c;
+  i = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant c <= d && d <= n
+    decreases n - i
+  {
+    if orig[i] >= p && d < n {
+      xs[d] = orig[i];
+      d = d + 1;
+    }
+    i = i + 1;
+  }
+  return c;
+}

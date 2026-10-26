@@ -1,0 +1,64 @@
+fn prefix(xs: &[i64], pre: &mut [i64])
+  requires len(xs) <= 1_000_000
+  requires len(pre) == len(xs) + 1
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  ensures len(pre) == len(xs) + 1
+  ensures pre[0] == 0
+  ensures forall k in 0..len(xs) { pre[k + 1] == pre[k] + xs[k] }
+  ensures forall k in 0..len(pre) { (0 - (k * 1_000_000_000)) <= pre[k] && pre[k] <= k * 1_000_000_000 }
+{
+  let n: i64 = len(xs);
+  pre[0] = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant len(pre) == n + 1
+    invariant pre[0] == 0
+    invariant forall k in 0..i { pre[k + 1] == pre[k] + xs[k] }
+    invariant forall k in 0..(i + 1) { (0 - (k * 1_000_000_000)) <= pre[k] && pre[k] <= k * 1_000_000_000 }
+    decreases n - i
+  {
+    pre[i + 1] = pre[i] + xs[i];
+    i = i + 1;
+  }
+}
+
+fn range_sum(xs: &[i64], pre: &[i64], lo: i64, hi: i64) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(pre) == len(xs) + 1
+  requires 0 <= lo && lo <= hi && hi <= len(xs)
+  requires pre[0] == 0
+  requires forall k in 0..len(xs) { pre[k + 1] == pre[k] + xs[k] }
+  requires forall k in 0..len(pre) { (0 - (k * 1_000_000_000)) <= pre[k] && pre[k] <= k * 1_000_000_000 }
+  ensures result == pre[hi] - pre[lo]
+{
+  return pre[hi] - pre[lo];
+}
+
+fn best_window(xs: &[i64], w: i64) -> i64
+  requires len(xs) <= 1_000_000
+  requires forall k in 0..len(xs) { -1_000_000_000 <= xs[k] && xs[k] <= 1_000_000_000 }
+  ensures (w < 1 || w > len(xs)) ==> result == -9223372036854775808
+{
+  let n: i64 = len(xs);
+  if w < 1 || w > n {
+    return -9223372036854775808;
+  }
+  let pre: [i64] = array(n + 1, 0);
+  prefix(&xs, &mut pre);
+  var best: i64 = pre[w] - pre[0];
+  var i: i64 = 1;
+  while i + w <= n
+    invariant 1 <= i && i <= (n - w) + 1
+    invariant len(pre) == n + 1
+    invariant forall k in 0..len(pre) { (0 - (k * 1_000_000_000)) <= pre[k] && pre[k] <= k * 1_000_000_000 }
+    decreases n - i
+  {
+    let s: i64 = pre[i + w] - pre[i];
+    if s > best {
+      best = s;
+    }
+    i = i + 1;
+  }
+  return best;
+}

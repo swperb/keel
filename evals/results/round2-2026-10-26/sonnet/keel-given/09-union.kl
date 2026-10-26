@@ -1,0 +1,70 @@
+fn union(a: &[i64], b: &[i64], out: &mut [i64]) -> i64
+  requires len(a) <= 1_000_000 && len(b) <= 1_000_000
+  requires len(out) == len(a) + len(b)
+  requires forall i in 0..len(a) { forall j in i..len(a) { a[i] <= a[j] } }
+  requires forall i in 0..len(b) { forall j in i..len(b) { b[i] <= b[j] } }
+  ensures 0 <= result && result <= len(out)
+  ensures forall s in 0..result { forall t in (s + 1)..result { out[s] < out[t] } }
+  ensures forall i in 0..len(a) { exists t in 0..result { out[t] == a[i] } }
+  ensures forall j in 0..len(b) { exists t in 0..result { out[t] == b[j] } }
+  ensures forall t in 0..result { (exists i in 0..len(a) { a[i] == out[t] }) || (exists j in 0..len(b) { b[j] == out[t] }) }
+{
+  let la: i64 = len(a);
+  let lb: i64 = len(b);
+  var i: i64 = 0;
+  var j: i64 = 0;
+  var r: i64 = 0;
+  while i < la || j < lb
+    invariant 0 <= i && i <= la
+    invariant 0 <= j && j <= lb
+    invariant la == len(a) && lb == len(b) && len(out) == la + lb
+    invariant 0 <= r && r <= i + j
+    invariant forall s in 0..r { forall t in (s + 1)..r { out[s] < out[t] } }
+    invariant r > 0 ==> (forall k in i..la { out[r - 1] <= a[k] })
+    invariant r > 0 ==> (forall k in j..lb { out[r - 1] <= b[k] })
+    invariant forall k in 0..i { exists t in 0..r { out[t] == a[k] } }
+    invariant forall k in 0..j { exists t in 0..r { out[t] == b[k] } }
+    invariant forall t in 0..r { (exists k in 0..i { a[k] == out[t] }) || (exists k in 0..j { b[k] == out[t] }) }
+    decreases (la - i) + (lb - j)
+  {
+    var v: i64 = 0;
+    var takeA: bool = false;
+    var takeB: bool = false;
+    if i < la && j < lb {
+      if a[i] < b[j] {
+        v = a[i];
+        takeA = true;
+      } else if b[j] < a[i] {
+        v = b[j];
+        takeB = true;
+      } else {
+        v = a[i];
+        takeA = true;
+        takeB = true;
+      }
+    } else if i < la {
+      v = a[i];
+      takeA = true;
+    } else {
+      v = b[j];
+      takeB = true;
+    }
+    var write: bool = true;
+    if r > 0 {
+      if out[r - 1] >= v {
+        write = false;
+      }
+    }
+    if write {
+      out[r] = v;
+      r = r + 1;
+    }
+    if takeA {
+      i = i + 1;
+    }
+    if takeB {
+      j = j + 1;
+    }
+  }
+  return r;
+}

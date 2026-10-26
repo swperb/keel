@@ -1,0 +1,26 @@
+fn dedup(xs: &mut [i64], orig: &[i64]) -> i64
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1000000
+  requires forall k in 0..len(orig) - 1 { orig[k] <= orig[k + 1] }
+  ensures result >= 0 && result <= len(xs)
+{
+  let n: i64 = len(xs);
+  if n == 0 {
+    return 0;
+  }
+  xs[0] = orig[0];
+  var r: i64 = 1;
+  var i: i64 = 1;
+  while i < n
+    invariant 1 <= i && i <= n
+    invariant 1 <= r && r <= i
+    decreases n - i
+  {
+    if orig[i] != orig[i - 1] {
+      xs[r] = orig[i];
+      r = r + 1;
+    }
+    i = i + 1;
+  }
+  return r;
+}

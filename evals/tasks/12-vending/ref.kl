@@ -1,0 +1,50 @@
+struct Vend { credit: i64, stock: i64, sold: i64 }
+
+enum Ev {
+  Coin { v: i64 },
+  Buy { price: i64 },
+  Refund,
+  Restock { n: i64 },
+}
+
+fn step(m: Vend, e: Ev) -> Vend
+  requires 0 <= m.credit && m.credit <= 1_000_000
+  requires 0 <= m.stock && m.stock <= 100
+  requires 0 <= m.sold && m.sold <= 1_000_000_000
+  ensures e is Ev.Coin ==> (((e as Ev.Coin).v > 0 && m.credit + (e as Ev.Coin).v <= 1_000_000) ==> (result.credit == m.credit + (e as Ev.Coin).v && result.stock == m.stock && result.sold == m.sold))
+  ensures e is Ev.Coin ==> (!((e as Ev.Coin).v > 0 && m.credit + (e as Ev.Coin).v <= 1_000_000) ==> (result.credit == m.credit && result.stock == m.stock && result.sold == m.sold))
+  ensures e is Ev.Buy ==> (((e as Ev.Buy).price > 0 && m.stock > 0 && m.credit >= (e as Ev.Buy).price && m.sold < 1_000_000_000) ==> (result.credit == m.credit - (e as Ev.Buy).price && result.stock == m.stock - 1 && result.sold == m.sold + 1))
+  ensures e is Ev.Buy ==> (!((e as Ev.Buy).price > 0 && m.stock > 0 && m.credit >= (e as Ev.Buy).price && m.sold < 1_000_000_000) ==> (result.credit == m.credit && result.stock == m.stock && result.sold == m.sold))
+  ensures e is Ev.Refund ==> (result.credit == 0 && result.stock == m.stock && result.sold == m.sold)
+  ensures e is Ev.Restock ==> (((e as Ev.Restock).n > 0) ==> (result.credit == m.credit && result.stock == (if m.stock + (e as Ev.Restock).n > 100 { 100 } else { m.stock + (e as Ev.Restock).n }) && result.sold == m.sold))
+  ensures e is Ev.Restock ==> (((e as Ev.Restock).n <= 0) ==> (result.credit == m.credit && result.stock == m.stock && result.sold == m.sold))
+{
+  var r: Vend = m;
+  match e {
+    Ev.Coin(c) => {
+      if c.v > 0 && c.v <= 1_000_000 - m.credit {
+        r.credit = m.credit + c.v;
+      }
+    }
+    Ev.Buy(b) => {
+      if b.price > 0 && m.stock > 0 && m.credit >= b.price && m.sold < 1_000_000_000 {
+        r.credit = m.credit - b.price;
+        r.stock = m.stock - 1;
+        r.sold = m.sold + 1;
+      }
+    }
+    Ev.Refund => {
+      r.credit = 0;
+    }
+    Ev.Restock(s) => {
+      if s.n > 0 {
+        if s.n >= 100 - m.stock {
+          r.stock = 100;
+        } else {
+          r.stock = m.stock + s.n;
+        }
+      }
+    }
+  }
+  return r;
+}

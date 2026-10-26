@@ -1,0 +1,31 @@
+spec fn rmod(k: i64, n: i64) -> i64 {
+  if (k % n) < 0 { (k % n) + n } else { k % n }
+}
+
+fn rotate(xs: &mut [i64], k: i64, orig: &[i64])
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1_000_000
+  requires forall i in 0..len(xs) { orig[i] == xs[i] }
+  ensures len(xs) == len(orig)
+  ensures len(xs) > 0 ==> (forall i in 0..len(xs) { xs[i] == orig[((i + len(xs)) - rmod(k, len(xs))) % len(xs)] })
+{
+  let n: i64 = len(xs);
+  if n == 0 {
+    return;
+  }
+  var s: i64 = k % n;
+  if s < 0 {
+    s = s + n;
+  }
+  assert s == rmod(k, n);
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant n == len(xs) && n == len(orig)
+    invariant forall j in 0..i { xs[j] == orig[((j + n) - s) % n] }
+    decreases n - i
+  {
+    xs[i] = orig[((i + n) - s) % n];
+    i = i + 1;
+  }
+}

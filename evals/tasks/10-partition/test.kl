@@ -1,0 +1,103 @@
+io fn show(xs: &[i64], r: i64) {
+  print(r);
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    decreases len(xs) - i
+  {
+    print(xs[i]);
+    i = i + 1;
+  }
+}
+
+io fn main() {
+  let x0: [i64] = array(0, 0);
+  let o0: [i64] = array(0, 0);
+  let r0: i64 = partition(&mut x0, 5, &o0);
+  show(&x0, r0);
+  let x1: [i64] = array(8, 0);
+  x1[0] = 3;
+  x1[1] = -1;
+  x1[2] = 4;
+  x1[3] = 1;
+  x1[4] = -5;
+  x1[5] = 9;
+  x1[6] = 2;
+  x1[7] = 6;
+  let o1: [i64] = array(8, 0);
+  o1[0] = 3;
+  o1[1] = -1;
+  o1[2] = 4;
+  o1[3] = 1;
+  o1[4] = -5;
+  o1[5] = 9;
+  o1[6] = 2;
+  o1[7] = 6;
+  let r1: i64 = partition(&mut x1, 3, &o1);
+  show(&x1, r1);
+  let x2: [i64] = array(5, 0);
+  x2[0] = -9223372036854775808;
+  x2[1] = 9223372036854775807;
+  x2[2] = 0;
+  x2[3] = -9223372036854775808;
+  x2[4] = 9223372036854775807;
+  let o2: [i64] = array(5, 0);
+  o2[0] = -9223372036854775808;
+  o2[1] = 9223372036854775807;
+  o2[2] = 0;
+  o2[3] = -9223372036854775808;
+  o2[4] = 9223372036854775807;
+  let r2: i64 = partition(&mut x2, 0, &o2);
+  show(&x2, r2);
+  let x3: [i64] = array(3, 0);
+  x3[0] = 7;
+  x3[1] = 7;
+  x3[2] = 7;
+  let o3: [i64] = array(3, 0);
+  o3[0] = 7;
+  o3[1] = 7;
+  o3[2] = 7;
+  let r3: i64 = partition(&mut x3, 7, &o3);
+  show(&x3, r3);
+  let x4: [i64] = array(3, 0);
+  x4[0] = 1;
+  x4[1] = 2;
+  x4[2] = 3;
+  let o4: [i64] = array(3, 0);
+  o4[0] = 1;
+  o4[1] = 2;
+  o4[2] = 3;
+  let r4: i64 = partition(&mut x4, -9223372036854775808, &o4);
+  show(&x4, r4);
+  let x5: [i64] = array(3, 0);
+  x5[0] = 1;
+  x5[1] = 2;
+  x5[2] = 3;
+  let o5: [i64] = array(3, 0);
+  o5[0] = 1;
+  o5[1] = 2;
+  o5[2] = 3;
+  let r5: i64 = partition(&mut x5, 9223372036854775807, &o5);
+  show(&x5, r5);
+  let x6: [i64] = array(6, 0);
+  x6[0] = 5;
+  x6[1] = 1;
+  x6[2] = 5;
+  x6[3] = 1;
+  x6[4] = 5;
+  x6[5] = 1;
+  let o6: [i64] = array(6, 0);
+  o6[0] = 5;
+  o6[1] = 1;
+  o6[2] = 5;
+  o6[3] = 1;
+  o6[4] = 5;
+  o6[5] = 1;
+  let r6: i64 = partition(&mut x6, 2, &o6);
+  show(&x6, r6);
+  let big: [i64] = array(1_000_000, 1);
+  let bigo: [i64] = array(1_000_000, 1);
+  let rb: i64 = partition(&mut big, 2, &bigo);
+  print(rb);
+  print(big[999_999]);
+}

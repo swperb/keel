@@ -1,0 +1,509 @@
+{
+  "haiku/keel": {
+    "07-rotate": {
+      "contract_lines": 4,
+      "self_ok": true,
+      "proved": 18,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "contract_lines": 7,
+      "self_ok": true,
+      "proved": 21,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "contract_lines": 10,
+      "self_ok": true,
+      "proved": 26,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "contract_lines": 9,
+      "self_ok": true,
+      "proved": 30,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "contract_lines": 19,
+      "self_ok": true,
+      "proved": 52,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 3,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "contract_lines": 3,
+      "self_ok": true,
+      "proved": 16,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    }
+  },
+  "haiku/keel-given": {
+    "07-rotate": {
+      "contract_lines": 13,
+      "self_ok": true,
+      "proved": 32,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "contract_lines": 17,
+      "self_ok": true,
+      "proved": 35,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "contract_lines": 20,
+      "self_ok": true,
+      "proved": 49,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "contract_lines": 36,
+      "self_ok": true,
+      "proved": 64,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "contract_lines": 41,
+      "self_ok": true,
+      "proved": 83,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "contract_lines": 10,
+      "self_ok": true,
+      "proved": 76,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "haiku/rust": {
+    "07-rotate": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "09-union": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    }
+  },
+  "opus/keel": {
+    "07-rotate": {
+      "contract_lines": 11,
+      "self_ok": true,
+      "proved": 28,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "contract_lines": 18,
+      "self_ok": true,
+      "proved": 42,
+      "self_codes": [],
+      "outcome": "harness_reject",
+      "harness_codes": [
+        "V-UNKNOWN"
+      ],
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "09-union": {
+      "contract_lines": 19,
+      "self_ok": true,
+      "proved": 52,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "contract_lines": 20,
+      "self_ok": true,
+      "proved": 48,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "contract_lines": 27,
+      "self_ok": true,
+      "proved": 58,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "contract_lines": 14,
+      "self_ok": true,
+      "proved": 104,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "opus/keel-given": {
+    "07-rotate": {
+      "contract_lines": 13,
+      "self_ok": true,
+      "proved": 31,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "contract_lines": 20,
+      "self_ok": true,
+      "proved": 39,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "contract_lines": 28,
+      "self_ok": true,
+      "proved": 75,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "contract_lines": 26,
+      "self_ok": true,
+      "proved": 47,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "contract_lines": 36,
+      "self_ok": true,
+      "proved": 74,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "contract_lines": 10,
+      "self_ok": true,
+      "proved": 76,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "opus/rust": {
+    "07-rotate": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "sonnet/keel": {
+    "07-rotate": {
+      "contract_lines": 11,
+      "self_ok": true,
+      "proved": 29,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 3,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "contract_lines": 20,
+      "self_ok": true,
+      "proved": 41,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "contract_lines": 25,
+      "self_ok": true,
+      "proved": 62,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "contract_lines": 24,
+      "self_ok": true,
+      "proved": 54,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "contract_lines": 31,
+      "self_ok": true,
+      "proved": 68,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "contract_lines": 6,
+      "self_ok": true,
+      "proved": 40,
+      "self_codes": [],
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "sonnet/keel-given": {
+    "07-rotate": {
+      "contract_lines": 14,
+      "self_ok": true,
+      "proved": 35,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "contract_lines": 17,
+      "self_ok": true,
+      "proved": 38,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "contract_lines": 20,
+      "self_ok": true,
+      "proved": 56,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "contract_lines": 26,
+      "self_ok": true,
+      "proved": 52,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "contract_lines": 38,
+      "self_ok": true,
+      "proved": 75,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 2,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "contract_lines": 10,
+      "self_ok": true,
+      "proved": 76,
+      "self_codes": [],
+      "outcome": "pass",
+      "altered": [],
+      "iterations": 1,
+      "agent_confident": true
+    }
+  },
+  "sonnet/rust": {
+    "07-rotate": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "08-dedup": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "09-union": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "10-partition": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "11-windows": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    },
+    "12-vending": {
+      "proved": 0,
+      "contract_lines": 0,
+      "self_ok": true,
+      "outcome": "pass",
+      "iterations": 1,
+      "agent_confident": true
+    }
+  }
+}

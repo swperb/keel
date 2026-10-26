@@ -1,0 +1,56 @@
+fn prefix(xs: &[i64], pre: &mut [i64])
+  requires len(pre) == len(xs) + 1
+  requires len(xs) <= 1000000
+  requires forall i in 0..len(xs) { -1000000000 <= xs[i] && xs[i] <= 1000000000 }
+  ensures pre[0] == 0
+  ensures forall k in 0..len(xs) { pre[k + 1] - pre[k] == xs[k] }
+  ensures forall k in 0..len(xs) + 1 { -1000000000 * k <= pre[k] && pre[k] <= 1000000000 * k }
+{
+  let n: i64 = len(xs);
+  pre[0] = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant forall k in 0..i { pre[k + 1] - pre[k] == xs[k] }
+    invariant forall k in 0..i + 1 { -1000000000 * k <= pre[k] && pre[k] <= 1000000000 * k }
+    decreases n - i
+  {
+    pre[i + 1] = pre[i] + xs[i];
+    i = i + 1;
+  }
+}
+
+fn range_sum(xs: &[i64], pre: &[i64], lo: i64, hi: i64) -> i64
+  requires len(pre) == len(xs) + 1
+  requires len(xs) <= 1000000
+  requires 0 <= lo && lo <= hi && hi <= len(xs)
+  requires forall k in 0..len(pre) { -1000000000 * k <= pre[k] && pre[k] <= 1000000000 * k }
+  ensures result == pre[hi] - pre[lo]
+{
+  return pre[hi] - pre[lo];
+}
+
+fn best_window(xs: &[i64], w: i64) -> i64
+  requires len(xs) <= 1000000
+  requires forall i in 0..len(xs) { -1000000000 <= xs[i] && xs[i] <= 1000000000 }
+{
+  let n: i64 = len(xs);
+  if w < 1 || w > n {
+    return -9223372036854775807 - 1;
+  }
+  let pre: [i64] = array(n + 1, 0);
+  prefix(&xs, &mut pre);
+  var best: i64 = range_sum(&xs, &pre, 0, w);
+  var s: i64 = 0;
+  while s + w < n
+    invariant 0 <= s && s + w <= n
+    decreases n - s - w
+  {
+    let v: i64 = range_sum(&xs, &pre, s + 1, s + 1 + w);
+    if v > best {
+      best = v;
+    }
+    s = s + 1;
+  }
+  return best;
+}

@@ -1,0 +1,60 @@
+spec fn below(xs: &[i64], n: i64, p: i64) -> i64
+  requires 0 <= n && n <= len(xs)
+  decreases n
+{
+  if n == 0 { 0 } else { below(&xs, n - 1, p) + (if xs[n - 1] < p { 1 } else { 0 }) }
+}
+
+fn partition(xs: &mut [i64], p: i64, orig: &[i64]) -> i64
+  requires len(xs) <= 1_000_000
+  requires len(orig) == len(xs)
+  requires forall i in 0..len(xs) { xs[i] == orig[i] }
+  ensures result == below(&orig, len(orig), p)
+  ensures forall j in 0..len(orig) { orig[j] < p ==> xs[below(&orig, j, p)] == orig[j] }
+  ensures forall j in 0..len(orig) { orig[j] >= p ==> xs[(result + j) - below(&orig, j, p)] == orig[j] }
+{
+  let n: i64 = len(xs);
+  let lo: [i64] = array(n, 0);
+  let hi: [i64] = array(n, 0);
+  var wl: i64 = 0;
+  var wh: i64 = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant wl == below(&orig, i, p) && wl + wh == i && 0 <= wl && 0 <= wh
+    invariant forall k in 0..n { xs[k] == orig[k] }
+    invariant forall j in 0..i { 0 <= below(&orig, j, p) && below(&orig, j, p) <= j }
+    invariant forall j in 0..i { orig[j] < p ==> (below(&orig, j, p) < wl && lo[below(&orig, j, p)] == orig[j]) }
+    invariant forall j in 0..i { orig[j] >= p ==> (j - below(&orig, j, p) < wh && hi[j - below(&orig, j, p)] == orig[j]) }
+    decreases n - i
+  {
+    if xs[i] < p {
+      lo[wl] = xs[i];
+      wl = wl + 1;
+    } else {
+      hi[wh] = xs[i];
+      wh = wh + 1;
+    }
+    i = i + 1;
+  }
+  var a: i64 = 0;
+  while a < wl
+    invariant 0 <= a && a <= wl
+    invariant forall k in 0..a { xs[k] == lo[k] }
+    decreases wl - a
+  {
+    xs[a] = lo[a];
+    a = a + 1;
+  }
+  var b: i64 = 0;
+  while b < wh
+    invariant 0 <= b && b <= wh
+    invariant forall k in 0..wl { xs[k] == lo[k] }
+    invariant forall k in wl..(wl + b) { xs[k] == hi[k - wl] }
+    decreases wh - b
+  {
+    xs[wl + b] = hi[b];
+    b = b + 1;
+  }
+  return wl;
+}

@@ -1,0 +1,46 @@
+fn partition(xs: &mut [i64], p: i64, orig: &[i64]) -> i64
+  requires len(orig) == len(xs)
+  requires len(xs) <= 1_000_000
+  requires forall i in 0..len(xs) { orig[i] == xs[i] }
+  ensures len(xs) == len(orig)
+  ensures 0 <= result && result <= len(xs)
+  ensures forall t in 0..result { xs[t] < p }
+  ensures forall t in result..len(xs) { xs[t] >= p }
+{
+  let n: i64 = len(xs);
+  let hi: [i64] = array(n, 0);
+  var c: i64 = 0;
+  var h: i64 = 0;
+  var i: i64 = 0;
+  while i < n
+    invariant 0 <= i && i <= n
+    invariant 0 <= c && 0 <= h && c + h == i
+    invariant n == len(xs) && n == len(orig) && n == len(hi)
+    invariant forall t in 0..c { xs[t] < p }
+    invariant forall t in 0..h { hi[t] >= p }
+    decreases n - i
+  {
+    if orig[i] < p {
+      xs[c] = orig[i];
+      c = c + 1;
+    } else {
+      hi[h] = orig[i];
+      h = h + 1;
+    }
+    i = i + 1;
+  }
+  var t2: i64 = 0;
+  while t2 < h
+    invariant 0 <= t2 && t2 <= h
+    invariant c + h == n
+    invariant n == len(xs) && n == len(hi)
+    invariant forall t in 0..c { xs[t] < p }
+    invariant forall t in 0..h { hi[t] >= p }
+    invariant forall t in c..(c + t2) { xs[t] >= p }
+    decreases h - t2
+  {
+    xs[c + t2] = hi[t2];
+    t2 = t2 + 1;
+  }
+  return c;
+}

@@ -1,0 +1,78 @@
+io fn show(xs: &[i64]) {
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs)
+    decreases len(xs) - i
+  {
+    print(xs[i]);
+    i = i + 1;
+  }
+}
+
+io fn main() {
+  let e: [i64] = array(0, 0);
+  let eo: [i64] = array(0, 0);
+  rotate(&mut e, 3, &eo);
+  show(&e);
+  print(-1);
+  let a: [i64] = array(5, 0);
+  let ao: [i64] = array(5, 0);
+  a[0] = 1;
+  a[1] = 2;
+  a[2] = 3;
+  a[3] = 4;
+  a[4] = 5;
+  ao[0] = 1;
+  ao[1] = 2;
+  ao[2] = 3;
+  ao[3] = 4;
+  ao[4] = 5;
+  rotate(&mut a, 2, &ao);
+  show(&a);
+  print(-1);
+  let b: [i64] = array(5, 0);
+  b[0] = 1;
+  b[1] = 2;
+  b[2] = 3;
+  b[3] = 4;
+  b[4] = 5;
+  rotate(&mut b, -1, &ao);
+  show(&b);
+  print(-1);
+  let c: [i64] = array(5, 0);
+  c[0] = 1;
+  c[1] = 2;
+  c[2] = 3;
+  c[3] = 4;
+  c[4] = 5;
+  rotate(&mut c, -9223372036854775808, &ao);
+  show(&c);
+  print(-1);
+  let d: [i64] = array(5, 0);
+  d[0] = 1;
+  d[1] = 2;
+  d[2] = 3;
+  d[3] = 4;
+  d[4] = 5;
+  rotate(&mut d, 9223372036854775807, &ao);
+  show(&d);
+  print(-1);
+  let f: [i64] = array(5, 0);
+  f[0] = 1;
+  f[1] = 2;
+  f[2] = 3;
+  f[3] = 4;
+  f[4] = 5;
+  rotate(&mut f, 10, &ao);
+  show(&f);
+  print(-1);
+  let g: [i64] = array(1, 42);
+  let go: [i64] = array(1, 42);
+  rotate(&mut g, 7, &go);
+  show(&g);
+  print(-1);
+  let h: [i64] = array(1_000_000, 0);
+  let ho: [i64] = array(1_000_000, 0);
+  rotate(&mut h, 999_999, &ho);
+  print(h[0]);
+}
