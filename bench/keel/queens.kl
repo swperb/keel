@@ -1,0 +1,112 @@
+// Bend's bench/runtime/queens: count the 17-queens placements by bitmask
+// backtracking. A fork tree over 2^17 leaves picks a 4-row prefix per leaf
+// (a hashed leaf index decoded into four columns, at most 11730
+// prefixes), checks it is legal, and solves the remaining rows; the tree
+// sums (solutions, nodes visited). Checksum (sols * 2654435761) ^ nodes in
+// wrapping u32, as in Bend: 2063750025.
+//
+// Proved: every shift amount is in range, every value stored into a u32
+// fits (bit operations are reduced mod 2^32 like Bend's U32 and C's
+// uint32_t), every loop and the recursion terminate, and the fork tree's
+// branches cannot race. Termination of the candidate loop rests on a fuel
+// bound of 32 iterations (a u32 has 32 bits to clear) and the recursion
+// on a row budget, as Bend's own port uses a fuel argument.
+
+struct Stats { sols: u32, nodes: u32 }
+
+// Place a queen on each candidate column of the current row in turn
+// (lowest bit first) and recurse on the next row; `rows` is the number of
+// rows still to place.
+fn solve(cand: u32, cols: u32, ld: u32, rd: u32, full: u32, rows: i64, acc: Stats) -> Stats
+  requires 0 <= rows
+  decreases rows
+{
+  var c: u32 = cand;
+  var sols: u32 = acc.sols;
+  var nodes: u32 = acc.nodes;
+  var fuel: i64 = 32;
+  while c != 0 && fuel > 0
+    invariant 0 <= fuel && fuel <= 32
+    decreases fuel
+  {
+    let bit: u32 = wrap_u32(c & (0 - c));
+    let nc: u32 = wrap_u32(cols | bit);
+    if nc == full {
+      sols = wrap_u32(sols + 1);
+      nodes = wrap_u32(nodes + 1);
+    } else if rows > 0 {
+      let nl: u32 = wrap_u32((ld | bit) * 2);
+      let nr: u32 = wrap_u32((rd | bit) / 2);
+      let w: Stats = solve(wrap_u32(full & (~(nc | nl | nr))), nc, nl, nr, full, rows - 1, Stats { sols: sols, nodes: wrap_u32(nodes + 1) });
+      sols = w.sols;
+      nodes = w.nodes;
+    }
+    c = wrap_u32(c - bit);
+    fuel = fuel - 1;
+  }
+  return Stats { sols: sols, nodes: nodes };
+}
+
+// One 4-row prefix: permute the leaf index, decode the four columns,
+// reject illegal placements, solve the remaining 13 rows.
+fn pfx(j: i64) -> Stats
+  requires 0 <= j && j < 131072
+{
+  let i: i64 = wrap_u32(j * 2654435761) & 131071;
+  if i >= 11730 {
+    return Stats { sols: 0, nodes: 0 };
+  }
+  let b0: i64 = 1 << (i / 4913);
+  let b1: i64 = 1 << ((i / 289) % 17);
+  if wrap_u32(b1 & (b0 | (b0 * 2) | (b0 / 2))) != 0 {
+    return Stats { sols: 0, nodes: 0 };
+  }
+  let b2: i64 = 1 << ((i / 17) % 17);
+  let c2: u32 = wrap_u32(b0 | b1);
+  let l2: u32 = wrap_u32(((b0 * 2) | b1) * 2);
+  let r2: u32 = wrap_u32(((b0 / 2) | b1) / 2);
+  if wrap_u32(b2 & (c2 | l2 | r2)) != 0 {
+    return Stats { sols: 0, nodes: 0 };
+  }
+  let b3: i64 = 1 << (i % 17);
+  let c3: u32 = wrap_u32(c2 | b2);
+  let l3: u32 = wrap_u32((l2 | b2) * 2);
+  let r3: u32 = wrap_u32((r2 | b2) / 2);
+  if wrap_u32(b3 & (c3 | l3 | r3)) != 0 {
+    return Stats { sols: 0, nodes: 0 };
+  }
+  let c4: u32 = wrap_u32(c3 | b3);
+  let l4: u32 = wrap_u32((l3 | b3) * 2);
+  let r4: u32 = wrap_u32((r3 | b3) / 2);
+  return solve(wrap_u32(131071 & (~(c4 | l4 | r4))), c4, l4, r4, 131071, 13, Stats { sols: 0, nodes: 0 });
+}
+
+fn merge(a: Stats, b: Stats) -> Stats {
+  return Stats { sols: wrap_u32(a.sols + b.sols), nodes: wrap_u32(a.nodes + b.nodes) };
+}
+
+// The fork tree over the 2^d leaves from i.
+fn batch(d: i64, i: i64) -> Stats
+  requires 0 <= d && d <= 17 && 0 <= i && i + (1 << d) <= 131072
+  decreases d
+{
+  if d == 0 {
+    return pfx(i);
+  }
+  let h: i64 = 1 << (d - 1);
+  if d <= 6 {
+    let x: Stats = batch(d - 1, i);
+    let y: Stats = batch(d - 1, i + h);
+    return merge(x, y);
+  }
+  par {
+    let a: Stats = batch(d - 1, i);
+    let b: Stats = batch(d - 1, i + h);
+  }
+  return merge(a, b);
+}
+
+io fn main() {
+  let s: Stats = batch(17, 0);
+  print(wrap_u32(wrap_u32(s.sols * 2654435761) ^ s.nodes));
+}
