@@ -1,6 +1,7 @@
 #!/bin/sh
 # Keel test suite: examples must prove and print the expected output;
-# every file in tests/reject must fail with the error code on its first line.
+# every file in tests/accept must prove; every file in tests/reject must fail
+# with the error code on its first line.
 set -u
 cd "$(dirname "$0")/.."
 K=./target/release/keel
