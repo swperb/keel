@@ -125,7 +125,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "V-DEAD" => "This branch, match arm or loop body can never execute given the conditions and invariants that guard it. Dead code hides untested logic; delete it or fix the guard.",
         "V-SLICE" => "The verifier could not prove a slice's bounds satisfy 0 <= lo <= hi <= len(array).",
         "V-DISJOINT" => "Two borrows of one array, at least one exclusive, may touch overlapping indices: in one call, or across par branches (a data race). Prove the slice ranges disjoint, e.g. [lo..mid] and [mid..hi].",
-        "V-UNKNOWN" => "The solver timed out or rejected the proof script. Strengthen invariants or split the function; a rejected script is a keel bug.",
+        "V-UNKNOWN" => "The solver used up its fixed work budget, or rejected the proof script. Budgets count solver steps, not seconds, so the verdict is the same on every run. A quantifier that reads xs[t] and xs[t + 1] can make the solver instantiate it forever; state such facts pairwise (forall a in lo..hi { forall b in a..hi { .. } }). Otherwise strengthen invariants or split the function. A rejected script is a keel bug.",
         _ => return None,
     })
 }

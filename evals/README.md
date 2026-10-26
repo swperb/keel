@@ -170,6 +170,15 @@ What discriminated:
    needs deterministic verification and a warning for self-triggering
    quantifiers; until then a verified result can depend on luck.
 
+   **Fixed after this run.** The generated SMT was in fact identical from
+   run to run; the variation came from wall-clock timeouts, whose timing
+   changed solver state for later checks in the same process. Every check
+   now gets a fixed budget of solver work (Z3 `rlimit`), so verdicts are
+   deterministic. This file now fails the same way every time, with a hint
+   naming the self-triggering quantifier; rewritten pairwise as the hint
+   suggests, it proves in 0.77 s, where it previously needed about 110 s of
+   solver work.
+
 What did not discriminate:
 
 4. **Hidden tests.** 53 of 54 solutions pass, and all 18 Rust solutions

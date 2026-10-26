@@ -85,7 +85,7 @@ On a 15-core M-series Mac, counting primes below 20M (`examples/primes.kl`):
 Parallel mergesort of 10M integers (`examples/msort.kl`). The verifier
 proves the output is sorted **and is a permutation of the input** (every
 value occurs exactly as often as before), plus bounds, termination and race
-freedom, in about 1.6 s:
+freedom, in about 1 s:
 
 ```
 par {
@@ -169,9 +169,16 @@ a much smaller job than reviewing the code.
 ### Speed
 
 Each function's obligations go to their own Z3 process in parallel. Every
-example verifies in 0.01 to 0.6 s. Reachability checks get a 300 ms budget
-and any the solver cannot settle are reported as inconclusive rather than
-silently passed.
+example verifies in 0.01 to 1 s.
+
+Verification is deterministic: every check gets a fixed budget of solver
+work (Z3's resource counter), never a wall-clock timeout, so the same file
+gets the same verdict on every run and every machine load. Reachability
+checks get a small budget, and any the solver cannot settle are reported as
+inconclusive rather than silently passed. When a proof runs out of budget
+in a function with a self-triggering quantifier such as
+`forall t in 0..n { xs[t] < xs[t + 1] }`, the error names it and suggests
+the pairwise form, which typically proves in under a second.
 
 ## The language
 

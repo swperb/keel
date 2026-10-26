@@ -1048,15 +1048,12 @@ fn build_script(prelude: &str, decls: &[String], obls: &[Obl], pick: &[usize], q
         if !o.reach {
             script += &format!("(assert (not {}))\n", o.goal);
         }
-        // Reachability needs a model, which quantified axioms make expensive;
-        // give it a short budget and report inconclusive results.
-        if o.reach {
-            script += "(set-option :timeout 300)\n";
-        }
-        script += &format!("(echo \"@{}\")\n(check-sat)\n", i);
-        if o.reach {
-            script += "(set-option :timeout 10000)\n";
-        }
+        // The solver driver replaces this marker with a deterministic
+        // resource budget for the check that follows (see run_z3).
+        // Reachability needs a model, which quantified axioms make
+        // expensive, so it gets a smaller budget and inconclusive results
+        // are reported rather than failed.
+        script += &format!("(echo \"@{}\")\n{}\n(check-sat)\n", i, if o.reach { BUDGET_REACH } else { BUDGET_PROOF });
         if !o.cex.is_empty() && !o.reach {
             let terms: Vec<&str> = o.cex.iter().map(|(_, t)| t.as_str()).collect();
             script += &format!("(get-value ({}))\n", terms.join(" "));
@@ -1183,22 +1180,101 @@ pub fn z3_path() -> String {
     std::env::var("KEEL_Z3").unwrap_or_else(|_| "z3".into())
 }
 
-fn run_z3(script: &str) -> Result<String, String> {
-    run_z3_timeout(script, 10000)
+const BUDGET_PROOF: &str = ";;keel-budget proof";
+const BUDGET_REACH: &str = ";;keel-budget reach";
+
+/// Solver budgets in Z3 resource units (`rlimit`). Unlike wall-clock
+/// timeouts these count deterministic solver work, so the same program
+/// gets the same verdict on every run and every machine load.
+/// Calibrated against the examples and eval references, whose hardest
+/// proof uses about 64M units (roughly 12 s); 200M leaves 3x headroom
+/// while a runaway proof still fails in well under a minute.
+const RLIMIT_PROOF: u64 = 200_000_000;
+// Reachability: a path that is possible is confirmed almost at once, and a
+// dead one is usually refuted just as fast; what remains is model search on
+// quantified facts that rarely finishes. 200K matches 2M on every example
+// and eval reference (same V-DEAD verdicts, same inconclusive counts).
+const RLIMIT_REACH: u64 = 200_000;
+const RLIMIT_RETRY: u64 = 10_000_000;
+
+fn budget(var: &str, default: u64) -> u64 {
+    std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-fn run_z3_timeout(script: &str, ms: u32) -> Result<String, String> {
-    let t = format!("-t:{}", ms);
+fn run_z3(script: &str) -> Result<String, String> {
+    run_z3_budget(script, budget("KEEL_RLIMIT", RLIMIT_PROOF), budget("KEEL_RLIMIT_REACH", RLIMIT_REACH))
+}
+
+/// Drive one Z3 process interactively. Z3's `rlimit` counter is cumulative
+/// over the whole process, so before each check we read the counter and
+/// grant that check a fixed budget on top of it. A generous wall-clock
+/// limit stays as a backstop against a hung solver; it is never meant to
+/// decide a verdict.
+fn run_z3_budget(script: &str, proof: u64, reach: u64) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
     let mut child = Command::new(z3_path())
-        .args(["-in", "-smt2", t.as_str()])
+        .args(["-in", "-smt2", "-t:120000"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("could not run z3 ({}); install it or set KEEL_Z3", e))?;
-    child.stdin.take().unwrap().write_all(script.as_bytes()).map_err(|e| e.to_string())?;
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let log = std::env::var("KEEL_RLIMIT_LOG").is_ok();
+    let mut out = String::new();
+    let mut chunk = String::new();
+    let mut last_count: Option<u64> = None;
+    // Send `text`, then ask for the counter; collect output until it arrives.
+    let mut send = |text: &str, out: &mut String| -> Result<u64, String> {
+        stdin.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        stdin.write_all(b"(get-info :rlimit)\n").map_err(|e| e.to_string())?;
+        stdin.flush().map_err(|e| e.to_string())?;
+        loop {
+            let line = match lines.next() {
+                Some(l) => l.map_err(|e| e.to_string())?,
+                None => return Err("z3 exited unexpectedly".into()),
+            };
+            if let Some(n) = line.trim().strip_prefix("(:rlimit ").and_then(|x| x.strip_suffix(')')) {
+                return n.trim().parse().map_err(|_| format!("bad rlimit reply: {}", line));
+            }
+            out.push_str(&line);
+            out.push('\n');
+        }
+    };
+    for line in script.lines() {
+        let kind = match line {
+            BUDGET_PROOF => Some(proof),
+            BUDGET_REACH => Some(reach),
+            _ => None,
+        };
+        match kind {
+            Some(b) => {
+                let now = send(&chunk, &mut out)?;
+                if log {
+                    if let Some(prev) = last_count {
+                        eprintln!("rlimit used: {}", now - prev);
+                    }
+                }
+                last_count = Some(now);
+                chunk = format!("(set-option :rlimit {})\n", now + b);
+            }
+            None => {
+                chunk.push_str(line);
+                chunk.push('\n');
+            }
+        }
+    }
+    let now = send(&chunk, &mut out)?;
+    if log {
+        if let Some(prev) = last_count {
+            eprintln!("rlimit used: {}", now - prev);
+        }
+    }
+    drop(send);
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(out)
 }
 
 pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String> {
@@ -1221,6 +1297,86 @@ pub fn verify(prog: &Program, dump_dir: Option<&str>) -> Result<VResult, String>
         }
     }
     Ok(total)
+}
+
+/// Find a quantifier whose body indexes one array both at the bound
+/// variable and at the bound variable shifted by a constant, as in
+/// `forall t in 0..n { xs[t] < xs[t + 1] }`. Each instance creates the
+/// term that triggers the next, a classic solver matching loop.
+fn self_triggering_quantifier(f: &Func) -> Option<(Span, String, String)> {
+    fn shifted(idx: &Expr, var: &str) -> bool {
+        match &idx.k {
+            ExprK::Binary(BOp::Add | BOp::Sub, a, b) => {
+                matches!((&a.k, &b.k), (ExprK::Var(v), ExprK::Int(c)) if v == var && *c != 0)
+                    || matches!((&a.k, &b.k), (ExprK::Int(c), ExprK::Var(v)) if v == var && *c != 0)
+            }
+            _ => false,
+        }
+    }
+    fn indexes(e: &Expr, out: &mut Vec<(String, Expr)>) {
+        match &e.k {
+            ExprK::Index(a, i) => {
+                out.push((a.clone(), (**i).clone()));
+                indexes(i, out);
+            }
+            ExprK::Unary(_, a) | ExprK::Field(a, _) | ExprK::Is(a, _, _) | ExprK::As(a, _, _) | ExprK::Old(a) => indexes(a, out),
+            ExprK::Binary(_, a, b) => {
+                indexes(a, out);
+                indexes(b, out);
+            }
+            ExprK::IfE(c, a, b) => {
+                indexes(c, out);
+                indexes(a, out);
+                indexes(b, out);
+            }
+            ExprK::Quant { body, .. } => indexes(body, out),
+            ExprK::Call(_, args) => args.iter().for_each(|x| indexes(x, out)),
+            _ => {}
+        }
+    }
+    fn find(e: &Expr) -> Option<(Span, String, String)> {
+        match &e.k {
+            ExprK::Quant { var, body, .. } => {
+                let mut ix = vec![];
+                indexes(body, &mut ix);
+                for (arr, i) in &ix {
+                    if matches!(&i.k, ExprK::Var(v) if v == var) && ix.iter().any(|(a2, j)| a2 == arr && shifted(j, var)) {
+                        return Some((e.span, arr.clone(), var.clone()));
+                    }
+                }
+                find(body)
+            }
+            ExprK::Unary(_, a) | ExprK::Old(a) => find(a),
+            ExprK::Binary(_, a, b) => find(a).or_else(|| find(b)),
+            ExprK::IfE(c, a, b) => find(c).or_else(|| find(a)).or_else(|| find(b)),
+            _ => None,
+        }
+    }
+    fn block(b: &Block) -> Option<(Span, String, String)> {
+        for s in b {
+            let r = match &s.k {
+                StmtK::While { invs, body, .. } => invs.iter().find_map(find).or_else(|| block(body)),
+                StmtK::If { then, els, .. } => block(then).or_else(|| els.as_ref().and_then(block)),
+                StmtK::Match { arms, .. } => arms.iter().find_map(|a| block(&a.body)),
+                StmtK::Assert(e) => find(e),
+                _ => None,
+            };
+            if r.is_some() {
+                return r;
+            }
+        }
+        None
+    }
+    f.requires.iter().chain(&f.ensures).find_map(find).or_else(|| block(&f.body))
+}
+
+fn loop_hint(looping: &Option<(Span, String, String)>) -> Option<String> {
+    looping.as_ref().map(|(span, arr, var)| {
+        format!(
+            "the quantifier at line {}:{} reads {}[{}] and a shifted index such as {}[{} + 1], which can make the solver instantiate it forever. State it pairwise instead, for example forall a in lo..hi {{ forall b in a..hi {{ {}[a] <= {}[b] }} }}",
+            span.line, span.col, arr, var, arr, var, arr, arr
+        )
+    })
 }
 
 fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prelude: &str, bare: &str, dump_dir: Option<&str>) -> Result<VResult, String> {
@@ -1261,7 +1417,7 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
                     if pick.is_empty() {
                         (HashMap::new(), None)
                     } else {
-                        run_z3_timeout(&build_script(bare, d, o, pick, true), 3000).map(|out| (parse_results(&out), solver_error(&out))).unwrap_or_default()
+                        run_z3_budget(&build_script(bare, d, o, pick, true), budget("KEEL_RLIMIT_RETRY", RLIMIT_RETRY), budget("KEEL_RLIMIT_REACH", RLIMIT_REACH)).map(|out| (parse_results(&out), solver_error(&out))).unwrap_or_default()
                     }
                 })
             })
@@ -1277,7 +1433,8 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
             diags.push(Diag::new("V-UNKNOWN", f.span, format!("solver rejected part of the proof script for '{}', so its results cannot be trusted: {}", f.name, e)).hint("this is a keel bug; please report it with the program"));
         }
     }
-    for (((_, obls), res1), res2) in jobs.iter().zip(&first).zip(&second) {
+    for ((((_, obls), res1), res2), f) in jobs.iter().zip(&first).zip(&second).zip(funcs) {
+        let looping = self_triggering_quantifier(f);
         for (i, o) in obls.iter().enumerate() {
             let (status, model) = res1.get(&i).cloned().unwrap_or(("unknown".into(), String::new()));
             match (o.reach, status.as_str()) {
@@ -1292,13 +1449,15 @@ fn run_phase(prog: &Program, map: &HashMap<String, &Func>, funcs: &[&Func], prel
                 (false, other) => match res2.get(&i).map(|r| (r.0.as_str(), r.1.clone())) {
                     Some(("unsat", _)) => proved += 1,
                     Some(("sat", m)) => {
-                        let mut d = Diag::new(o.code, o.span, format!("{} (counterexample ignores quantified facts; it may be spurious)", o.msg)).hint(o.hint);
+                        let hint = loop_hint(&looping).unwrap_or_else(|| o.hint.to_string());
+                        let mut d = Diag::new(o.code, o.span, format!("{} (the solver ran out of budget; this counterexample ignores quantified facts and may be spurious)", o.msg)).hint(hint);
                         d.cex = model_values(&m, &o.cex);
                         diags.push(d);
                     }
                     _ => {
-                        let why = if other.starts_with("(error") { format!("solver error: {}", other) } else { "solver gave up".into() };
-                        diags.push(Diag::new("V-UNKNOWN", o.span, format!("could not prove: {} ({})", o.msg, why)).hint(o.hint));
+                        let why = if other.starts_with("(error") { format!("solver error: {}", other) } else { "solver ran out of budget".into() };
+                        let hint = loop_hint(&looping).unwrap_or_else(|| o.hint.to_string());
+                        diags.push(Diag::new("V-UNKNOWN", o.span, format!("could not prove: {} ({})", o.msg, why)).hint(hint));
                     }
                 },
             }

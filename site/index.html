@@ -112,7 +112,7 @@ merge(&amp;<span class="kw">mut</span> xs, &amp;<span class="kw">mut</span> tmp,
         <li><span>Rust, scoped threads</span><span class="bar" style="--share: 0.074"></span><span class="time">0.20 s</span></li>
         <li class="ours"><span>Keel, <code>par</code></span><span class="bar" style="--share: 0.085"></span><span class="time">0.23 s</span></li>
       </ul>
-      <p class="dim">Parallel mergesort of 10 million integers takes 0.12 s in Keel, the same as Rust with rayon. Checking a file takes 0.01 to 0.6 s, fast enough for an agent to re-check after every edit.</p>
+      <p class="dim">Parallel mergesort of 10 million integers takes 0.12 s in Keel, the same as Rust with rayon. Checking a file takes 0.01 to 1 s and gives the same verdict every time, so an agent can re-check after every edit.</p>
     </div>
   </section>
 

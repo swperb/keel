@@ -75,6 +75,9 @@ V-INVARIANT-ENTRY / V-INVARIANT-KEPT, V-TERMINATION, V-VACUOUS (contradictory
 requires), V-DEAD (a branch that can never run), E-PAREN (add parentheses).
 `keel explain CODE` describes any code. Proofs about loops almost always need
 invariants that bound every variable the body changes.
+State ordering facts pairwise, `forall a in lo..hi { forall b in a..hi { xs[a] <= xs[b] } }`,
+not as neighbors (`xs[t] <= xs[t + 1]`): the neighbor form can make the solver
+loop until it runs out of budget.
 
 ## Complete example
 ```
