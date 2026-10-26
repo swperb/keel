@@ -99,7 +99,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
                        unless both are slices, in which case the verifier must prove them disjoint (V-DISJOINT).",
         "E-ARRAY" => "Array values (from `array(..)` or a call returning `[i64]`) may only appear as a `let` initializer or a `return` value.",
         "E-EFFECT" => "Only `io fn` functions may call `print` or other `io fn` functions. `par` branches must be pure.",
-        "E-SPEC" => "Specifications (requires/ensures/invariant/decreases/assert) are pure logic: no calls except `len`. \
+        "E-SPEC" => "Specifications (requires/ensures/invariant/decreases/assert) are pure logic: they may call `len`, `count` and `spec fn`s. `old(e)` is allowed in ensures, invariants and asserts. \
                      `result` is only valid in `ensures`; `forall`/`exists` only in specifications.",
         "E-MUT" => "Only `var` locals can be reassigned; only owned arrays or `&mut` parameters can be written.",
         "E-RETURN" => "A function with a return type must end in `return` on every path.",

@@ -182,7 +182,7 @@ impl<'a> Cg<'a> {
                 let vi = self.prog.variants(*id).unwrap().iter().position(|x| x.name == *v).unwrap();
                 format!("(({}).tag == {})", self.ex(b), vi)
             }
-            ExprK::Result | ExprK::Quant { .. } | ExprK::Borrow { .. } | ExprK::IfE(..) | ExprK::As(..) => unreachable!("specs are erased"),
+            ExprK::Result | ExprK::Quant { .. } | ExprK::Borrow { .. } | ExprK::IfE(..) | ExprK::As(..) | ExprK::Old(..) => unreachable!("specs are erased"),
         }
     }
 

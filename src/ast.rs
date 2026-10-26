@@ -238,7 +238,10 @@ pub enum ExprK {
     Index(String, Box<Expr>),
     Unary(UOp, Box<Expr>),
     Binary(BOp, Box<Expr>, Box<Expr>),
-    Quant { forall: bool, var: String, lo: Box<Expr>, hi: Box<Expr>, body: Box<Expr> },
+    /// `forall k in lo..hi { P }`, or with no range `forall v: i64 { P }` (every i64).
+    Quant { forall: bool, var: String, range: Option<(Box<Expr>, Box<Expr>)>, body: Box<Expr> },
+    /// `old(e)`: `e` evaluated in the state on function entry; specifications only.
+    Old(Box<Expr>),
     /// `&xs`, `&mut xs`, or a slice `&xs[lo..hi]` / `&mut xs[lo..hi]`.
     Borrow { name: String, mutable: bool, range: Option<(Box<Expr>, Box<Expr>)> },
     /// `Point { x: 1, y: 2 }` or `Shape.Circle { r: 5 }` or `Shape.Empty`.

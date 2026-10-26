@@ -1,0 +1,8 @@
+// expect: V-
+// Overwriting an element changes the multiset, so the permutation claim must fail.
+fn clobber(xs: &mut [i64])
+  requires len(xs) >= 1
+  ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }
+{
+  xs[0] = 7;
+}

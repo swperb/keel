@@ -16,7 +16,7 @@ enum Tok {
 const KEYWORDS: &[&str] = &[
     "fn", "io", "let", "var", "if", "else", "while", "invariant", "decreases", "requires", "ensures",
     "return", "assert", "par", "forall", "exists", "in", "true", "false", "result", "mut", "i64", "bool",
-    "struct", "enum", "match", "is", "as", "spec", "lemma",
+    "struct", "enum", "match", "is", "as", "spec", "lemma", "old",
 ];
 
 // Longest first so `==>` wins over `==`.
@@ -687,14 +687,27 @@ impl Parser {
             }
             Tok::Kw(q @ ("forall" | "exists")) => {
                 let var = self.ident()?;
-                self.expect_kw("in")?;
-                let lo = self.arith()?;
-                self.expect_p("..")?;
-                let hi = self.arith()?;
+                let range = if self.is_p(":") {
+                    self.bump();
+                    self.expect_kw("i64")?;
+                    None
+                } else {
+                    self.expect_kw("in")?;
+                    let lo = self.arith()?;
+                    self.expect_p("..")?;
+                    let hi = self.arith()?;
+                    Some((Box::new(lo), Box::new(hi)))
+                };
                 self.expect_p("{")?;
                 let body = self.expr()?;
                 self.expect_p("}")?;
-                ExprK::Quant { forall: q == "forall", var, lo: Box::new(lo), hi: Box::new(hi), body: Box::new(body) }
+                ExprK::Quant { forall: q == "forall", var, range, body: Box::new(body) }
+            }
+            Tok::Kw("old") => {
+                self.expect_p("(")?;
+                let e = self.expr()?;
+                self.expect_p(")")?;
+                ExprK::Old(Box::new(e))
             }
             Tok::Ident(tname) if is_upper(&tname) => {
                 let id = self.intern(&tname, span);

@@ -82,8 +82,10 @@ On a 15-core M-series Mac, counting primes below 20M (`examples/primes.kl`):
 | Rust, scoped threads | 0.20 s | 2.87 s |
 | Keel, `par` | 0.23 s | 2.85 s |
 
-Parallel mergesort of 10M integers (`examples/msort.kl`), with sortedness,
-bounds, termination and race freedom all proven:
+Parallel mergesort of 10M integers (`examples/msort.kl`). The verifier
+proves the output is sorted **and is a permutation of the input** (every
+value occurs exactly as often as before), plus bounds, termination and race
+freedom, in about 1.6 s:
 
 ```
 par {
@@ -182,7 +184,8 @@ silently passed.
 - Contracts: `requires`, `ensures` (with `result`), `decreases` (required for recursion).
 - Ghost code: `spec fn` (single-expression math definitions, spec-only `if c { a } else { b }`), `lemma` (no loops; prove by cases, `assert` and recursion).
 - Statements: `let`, `var`, assignment, `xs[i] = v`, `if`/`else`, `while ... invariant ... decreases ...`, `return`, `assert`, `par`.
-- Specs: `forall x in lo..hi { P }`, `exists`, `==>`, `len(xs)`.
+- Specs: `forall x in lo..hi { P }`, `forall v: i64 { P }` (every i64), `exists`, `==>`, `len(xs)`.
+- Multisets: `count(&xs, lo, hi, v)` is the number of times `v` occurs in `xs[lo..hi]`; `old(e)` in `ensures`, invariants and asserts is `e` on function entry. Together they state permutations: `ensures forall v: i64 { count(&xs, 0, len(xs), v) == old(count(&xs, 0, len(xs), v)) }`.
 - Slices: `&xs[lo..hi]` and `&mut xs[lo..hi]` borrow a range; the callee sees an array of length `hi - lo`. Two borrows of one array may coexist in a call or across `par` branches only if both are slices and the verifier proves the ranges disjoint.
 - `par` branches are calls: `let x: i64 = f(..);` or, for unit functions, `f(..);`.
 - Memory: arrays come from `array(n, fill)` or functions returning `[i64]`, are owned by one `let`, are borrowed only at call sites (so there are no lifetimes to annotate), and are freed when their scope ends unless returned.
@@ -202,6 +205,15 @@ sound for proving, so an "unsat" there counts as proved, while a model found
 there is reported as a counterexample marked possibly spurious, which is
 still more useful to an agent than "solver gave up".
 
+`count` is built in rather than a user `spec fn` because its useful facts
+need induction to prove. Its definition unfolds a bounded number of times
+(goals unfold twice, assumptions not at all, which keeps the solver out of
+matching loops), and a few standard lemmas are axioms: splitting a range
+adds counts, a single store changes at most one value's count, a slice
+view counts like the matching range of its parent, and writing a slice
+back only changes counts inside its range. These axioms are part of the
+trusted base, alongside Z3 and the verifier.
+
 ## Status and roadmap
 
 Working end-to-end compiler, no crates. `./tests/run.sh` runs the examples
@@ -212,7 +224,7 @@ verifier and the C compiler (Lean's is a small proof kernel).
 
 Next, roughly in order:
 1. Sized integers (`u8`..`u64`, `i32`), arrays of any element type, recursive types.
-2. Multiset and permutation reasoning, so sorts can be proven to keep their elements (mergesort today proves sortedness only), and a tuned standard library sort.
+2. A tuned standard library sort with the same sortedness and permutation guarantees, and faster failure on false multiset claims (today a wrong permutation claim is rejected only after the solver times out, about 13 s).
 3. `old(...)` in ensures, and cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
 4. `keel fmt` as the single canonical layout, and a proof cache keyed by function hash for fast agent iteration.
 5. Proven stack bounds, arena regions, and an LLVM backend.
