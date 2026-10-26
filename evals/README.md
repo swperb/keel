@@ -210,8 +210,8 @@ cell.
   whose specs are long enough that reading them is the hard part.
 - Rewrite the in-place specs with `old(...)` and `count` (now in Keel) and
   drop `orig`, so in-place tasks cannot copy from it.
-- Deterministic verification (fixed SMT emission order and solver seed)
-  before trusting single-run results; several samples per cell.
+- Several samples per cell. Verification is now deterministic (fixed solver
+  work budgets), so the remaining run-to-run variation is the agents'.
 - A Rust-with-specs comparison (for example Kani or Prusti) to separate
   "the language" from "having a verifier".
 

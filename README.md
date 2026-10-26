@@ -5,6 +5,43 @@ A systems language built for agents first. If a program compiles, it has been
 contract violations, data races and non-termination. Because every safety
 property is proven up front, the generated code has no runtime checks at all.
 
+![keel check rejects an overflowing midpoint with a concrete counterexample, then proves the fixed version](site/demo.gif)
+
+**Results so far**
+
+- **As fast as Rust, with proofs.** Counting primes below 20M with `par`:
+  0.23 s against 0.20 s for Rust scoped threads. Mergesort of 10M integers:
+  0.12 s, the same as `rayon::join`, with the output proven sorted and a
+  permutation of its input.
+- **Learnable by agents from one page.** Haiku, Sonnet and Opus each wrote
+  verifying Keel from a one-page primer. Given the contract, all three proved
+  all six exact specifications in round 2 (18 of 18). Their Rust solutions
+  passed the same hidden tests while carrying no machine-checked facts
+  ([evals](evals/README.md)).
+- **Deterministic.** Every check gets a fixed budget of solver work, so the
+  same file gets the same verdict on every run and machine.
+
+> **Can you break it?** If you get a program past `keel check` that overflows,
+> indexes out of bounds, races or loops forever, that is the most valuable bug
+> report there is. See **[BREAK_IT.md](BREAK_IT.md)** for what counts and
+> where we think the weak spots are.
+
+## Install
+
+```
+cargo install --git https://github.com/swperb/keel
+```
+
+Keel needs [Z3](https://github.com/Z3Prover/z3) on `PATH` (`brew install z3`
+or `apt install z3`) and a C compiler (`cc`, or set `CC`). Then:
+
+```
+keel check file.kl    # prove
+keel run file.kl      # prove, compile, run
+```
+
+A taste (`examples/search.kl`):
+
 ```
 fn search(xs: &[i64], key: i64) -> i64
   requires forall i in 0..len(xs) { forall j in i..len(xs) { xs[i] <= xs[j] } }
@@ -108,6 +145,8 @@ in 0.04 s and single-threaded `sort_unstable` in 0.11 s. A tuned sort in
 Keel's standard library is future work.
 
 ## Usage
+
+From a checkout (`cargo install --git` above puts `keel` on your `PATH` instead):
 
 ```
 cargo build --release
@@ -242,7 +281,7 @@ a bad program past `keel check`, see [BREAK_IT.md](BREAK_IT.md).
 Next, roughly in order:
 1. `u64`, arrays of structs, recursive types.
 2. A tuned standard library sort with the same sortedness and permutation guarantees, and faster failure on false multiset claims (today a wrong permutation claim is rejected only after the solver times out, about 13 s).
-3. `old(...)` in ensures, and cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
+3. Cross-checking proofs with a second solver (cvc5) to shrink the trusted base.
 4. `keel fmt` as the single canonical layout, and a proof cache keyed by function hash for fast agent iteration.
 5. Proven stack bounds, arena regions, and an LLVM backend.
 
