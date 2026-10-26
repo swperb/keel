@@ -19,6 +19,12 @@ expect_run bits "120 6 90 2176876992 -42 -5 12 "
 expect_run sized "1964367075 57005 48879 3735928559 1 -400 4 -128 4000000000 "
 # Narrow operands are computed in i64, never in C's int or uint32_t.
 expect_run promote "9000000000000000000 -1 -200 "
+# par for: the first and third lines count slots where the parallel result
+# differs from a serial loop. The OpenMP build (when the C compiler has it)
+# must also print exactly what the forced-serial build prints.
+expect_run parfor "0 1073742784901088 0 5467600 424 -424 "
+a=$($K run examples/parfor.kl 2>/dev/null); b=$(KEEL_NO_OPENMP=1 $K run examples/parfor.kl 2>/dev/null)
+if [ -n "$a" ] && [ "$a" = "$b" ]; then echo "ok   parfor parallel == serial"; else echo "FAIL parfor parallel != serial"; fail=1; fi
 # Verification is deterministic: the same file gives byte-identical output.
 a=$($K check examples/msort.kl 2>&1); b=$($K check examples/msort.kl 2>&1)
 if [ "$a" = "$b" ]; then echo "ok   deterministic msort"; else echo "FAIL deterministic msort"; fail=1; fi

@@ -1,0 +1,22 @@
+// Rows through disjoint &mut slices handed to a callee.
+fn fill_row(row: &mut [i64], v: i64)
+  ensures forall k in 0..len(row) { row[k] == v }
+{
+  var c: i64 = 0;
+  while c < len(row)
+    invariant 0 <= c && c <= len(row)
+    invariant forall d in 0..c { row[d] == v }
+    decreases len(row) - c
+  {
+    row[c] = v;
+    c = c + 1;
+  }
+}
+
+fn rows(m: &mut [i64], h: i64, w: i64)
+  requires 0 <= h && h <= 100000 && 0 <= w && w <= 100000 && len(m) == h * w
+{
+  par for r in 0..h {
+    fill_row(&mut m[r * w..(r + 1) * w], r);
+  }
+}

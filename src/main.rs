@@ -79,13 +79,27 @@ fn build(file: &str, opts: &Opts, out: &str) {
         exit(2)
     });
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    let st = Command::new(&cc)
-        .args(["-O3", "-std=c11", "-w", "-o", out, &cpath, "-lpthread"])
-        .status()
-        .unwrap_or_else(|e| {
-            eprintln!("keel: cannot run {}: {}", cc, e);
-            exit(2)
-        });
+    let compile = |extra: &[String]| {
+        Command::new(&cc)
+            .args(["-O3", "-std=c11", "-w", "-o", out, &cpath, "-lpthread"])
+            .args(extra)
+            .stderr(if extra.is_empty() { std::process::Stdio::inherit() } else { std::process::Stdio::null() })
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("keel: cannot run {}: {}", cc, e);
+                exit(2)
+            })
+    };
+    // `par for` loops run on OpenMP when the C compiler has it; otherwise
+    // the pragma is ignored and they run serially (same results).
+    let mut st = None;
+    if c.contains("#pragma omp") && std::env::var("KEEL_NO_OPENMP").is_err() {
+        st = openmp_flags().iter().map(|f| compile(f)).find(|s| s.success());
+        if st.is_none() {
+            eprintln!("keel: note: no OpenMP found for {}; par for loops will run serially (on macOS: brew install libomp)", cc);
+        }
+    }
+    let st = st.unwrap_or_else(|| compile(&[]));
     if !opts.emit_c {
         let _ = std::fs::remove_file(&cpath);
     }
@@ -93,6 +107,20 @@ fn build(file: &str, opts: &Opts, out: &str) {
         eprintln!("keel: C compiler failed (this is a keel bug)");
         exit(2);
     }
+}
+
+/// Compiler flags to try for OpenMP: GCC and LLVM clang take -fopenmp;
+/// Apple clang needs the preprocessor flag and a separate libomp.
+fn openmp_flags() -> Vec<Vec<String>> {
+    let mut v = vec![vec!["-fopenmp".to_string()]];
+    let mut prefixes: Vec<String> = std::env::var("KEEL_LIBOMP").into_iter().collect();
+    prefixes.extend(["/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"].map(String::from));
+    for p in prefixes {
+        if std::path::Path::new(&format!("{}/include/omp.h", p)).exists() {
+            v.push(["-Xpreprocessor", "-fopenmp", &format!("-I{}/include", p), &format!("-L{}/lib", p), &format!("-Wl,-rpath,{}/lib", p), "-lomp"].map(String::from).to_vec());
+        }
+    }
+    v
 }
 
 fn main() {

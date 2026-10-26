@@ -400,6 +400,22 @@ impl<'a> Cg<'a> {
                 self.line(&format!("{};", v));
             }
             StmtK::Par(branches) => self.par(branches),
+            StmtK::ParFor { var, lo, hi, body, .. } => {
+                // The verifier proved no iteration touches a slot another
+                // writes, and the body assigns only its own locals, so every
+                // outer variable is safely shared. Without OpenMP the pragma
+                // is ignored and the loop runs serially, with the same result.
+                let (l, h) = (self.ex(lo), self.ex(hi));
+                self.tmp += 1;
+                let t = self.tmp;
+                self.line(&format!("const int64_t lo{0} = {1}, hi{0} = {2};", t, l, h));
+                self.line("#pragma omp parallel for schedule(static)");
+                self.line(&format!("for (int64_t k_{1} = lo{0}; k_{1} < hi{0}; k_{1}++) {{", t, var));
+                self.ind += 1;
+                self.block(body);
+                self.ind -= 1;
+                self.line("}");
+            }
         }
     }
 

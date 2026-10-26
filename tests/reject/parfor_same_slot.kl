@@ -1,0 +1,8 @@
+// expect: V-RACE
+fn f(xs: &mut [i64], n: i64)
+  requires 0 <= n && n <= len(xs) && len(xs) > 0
+{
+  par for i in 0..n {
+    xs[0] = i;
+  }
+}

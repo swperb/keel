@@ -1,0 +1,10 @@
+// expect: V-RACE
+fn zero(row: &mut [i64]) { }
+
+fn f(m: &mut [i64], h: i64, w: i64)
+  requires 1 <= h && h <= 1000 && 1 <= w && w <= 1000 && len(m) == (h * w) + 1
+{
+  par for r in 0..h {
+    zero(&mut m[r * w..((r + 1) * w) + 1]);
+  }
+}

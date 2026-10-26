@@ -94,6 +94,11 @@ that the compiler enforces:
   cores. Branches may share an array only through slices the verifier proves
   disjoint (`V-DISJOINT`), so divide and conquer over arrays needs no unsafe
   code or locks. The spawner forks only while a core is free.
+- **Data-parallel loops.** `par for i in lo..hi { .. }` runs iterations on
+  OpenMP. The verifier proves no iteration touches a slot another writes
+  (`V-RACE`), and a per-iteration `ensures` becomes a `forall` after the
+  loop, so no invariant is needed. It matches Rust rayon on the kernels in
+  `bench/parfor` ([docs/par-for.md](docs/par-for.md)).
 - **Automated proofs with counterexamples.** Overflow, bounds, division by
   zero, contracts and termination are discharged by an SMT solver without
   hand-written proof terms; when a proof fails, the error carries concrete

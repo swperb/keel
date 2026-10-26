@@ -1,0 +1,62 @@
+// Memory-bound kernel: zs[i] = 3 * xs[i] + ys[i] over 50M slots (1.2 GB
+// touched per pass), 20 passes, then a serial checksum. Same work as
+// rayon_bench triad (main.rs).
+
+fn fill(xs: &mut [i64], seed: i64)
+  requires 0 <= seed && seed < 1000
+  ensures forall k in 0..len(xs) { -1000 <= xs[k] && xs[k] < 1000 }
+{
+  par for i in 0..len(xs)
+    ensures -1000 <= xs[i] && xs[i] < 1000
+  {
+    xs[i] = (((i * 7) + seed) % 2000) - 1000;
+  }
+}
+
+fn triad(xs: &[i64], ys: &[i64], zs: &mut [i64])
+  requires len(xs) == len(zs) && len(ys) == len(zs)
+  requires forall k in 0..len(xs) { -1000 <= xs[k] && xs[k] < 1000 }
+  requires forall k in 0..len(ys) { -1000 <= ys[k] && ys[k] < 1000 }
+  ensures forall k in 0..len(zs) { -4000 <= zs[k] && zs[k] < 4000 }
+{
+  par for i in 0..len(zs)
+    ensures -4000 <= zs[i] && zs[i] < 4000
+  {
+    zs[i] = (3 * xs[i]) + ys[i];
+  }
+}
+
+fn total(xs: &[i64]) -> i64
+  requires len(xs) <= 1000000000
+  requires forall k in 0..len(xs) { -4000 <= xs[k] && xs[k] < 4000 }
+{
+  var s: i64 = 0;
+  var i: i64 = 0;
+  while i < len(xs)
+    invariant 0 <= i && i <= len(xs) && -4000 * i <= s && s <= 4000 * i
+    decreases len(xs) - i
+  {
+    s = s + xs[i];
+    i = i + 1;
+  }
+  return s;
+}
+
+io fn main() {
+  let n: i64 = 50_000_000;
+  let xs: [i64] = array(n, 0);
+  let ys: [i64] = array(n, 0);
+  let zs: [i64] = array(n, 0);
+  fill(&mut xs, 1);
+  fill(&mut ys, 2);
+  var pass: i64 = 0;
+  while pass < 20
+    invariant 0 <= pass && pass <= 20
+    decreases 20 - pass
+  {
+    triad(&xs, &ys, &mut zs);
+    pass = pass + 1;
+  }
+  triad(&xs, &ys, &mut zs);
+  print(total(&zs));
+}

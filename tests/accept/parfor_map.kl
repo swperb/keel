@@ -1,0 +1,12 @@
+// A map: each iteration writes its own slot.
+fn square(xs: &[i64], ys: &mut [i64])
+  requires len(ys) == len(xs)
+  requires forall k in 0..len(xs) { -1000000 <= xs[k] && xs[k] <= 1000000 }
+  ensures forall k in 0..len(ys) { ys[k] == xs[k] * xs[k] }
+{
+  par for i in 0..len(xs)
+    ensures ys[i] == xs[i] * xs[i]
+  {
+    ys[i] = xs[i] * xs[i];
+  }
+}

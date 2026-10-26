@@ -1,0 +1,20 @@
+// A 2D kernel: one iteration per row, an inner loop over columns, writing
+// out[r * w + c]. Distinct rows write disjoint slots because 0 <= c < w.
+fn table(out: &mut [i64], h: i64, w: i64)
+  requires 0 <= h && h <= 100000 && 0 <= w && w <= 100000 && len(out) == h * w
+  ensures forall r in 0..h { forall c in 0..w { out[(r * w) + c] == r + c } }
+{
+  par for r in 0..h
+    ensures forall c in 0..w { out[(r * w) + c] == r + c }
+  {
+    var c: i64 = 0;
+    while c < w
+      invariant 0 <= c && c <= w
+      invariant forall d in 0..c { out[(r * w) + d] == r + d }
+      decreases w - c
+    {
+      out[(r * w) + c] = r + c;
+      c = c + 1;
+    }
+  }
+}

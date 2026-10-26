@@ -52,6 +52,9 @@ struct Checker<'a> {
     top: *const Expr,
     /// `old(..)` is meaningful here (ensures, and invariants/asserts in a body).
     old_ok: bool,
+    /// Inside a `par for` body: the scope depth where the body begins.
+    /// Names declared below it are shared by every iteration.
+    parfor: Option<usize>,
 }
 
 const BUILTINS: &[&str] = &["len", "array", "print", "count", "wrap_i8", "wrap_i16", "wrap_i32", "wrap_i64", "wrap_u8", "wrap_u16", "wrap_u32"];
@@ -68,6 +71,16 @@ impl<'a> Checker<'a> {
     }
     fn lookup(&self, n: &str) -> Option<Local> {
         self.scopes.iter().rev().find_map(|s| s.get(n).copied())
+    }
+    /// Depth of the scope that declares `n`.
+    fn scope_of(&self, n: &str) -> Option<usize> {
+        self.scopes.iter().rposition(|s| s.contains_key(n))
+    }
+    fn parfor_forbid(&mut self, span: Span, what: &str) {
+        if self.parfor.is_some() {
+            let code = if what.contains("io") { "E-EFFECT" } else { "E-PARFOR" };
+            self.err(Diag::new(code, span, format!("{} is not allowed in a 'par for' body", what)).hint("a par for body may compute, read anything, and write &mut arrays; see keel explain E-PARFOR"));
+        }
     }
     fn declare(&mut self, n: &str, l: Local, span: Span) {
         if self.lookup(n).is_some() {
@@ -369,6 +382,9 @@ impl<'a> Checker<'a> {
             }
             return Ty::Arr;
         }
+        if name == "array" || name == "print" {
+            self.parfor_forbid(span, if name == "array" { "allocating an array" } else { "io (print)" });
+        }
         if name == "print" {
             if !self.f.io {
                 self.err(Diag::new("E-EFFECT", span, "print is io; mark this function 'io fn'"));
@@ -394,6 +410,15 @@ impl<'a> Checker<'a> {
         }
         if sig.io && !self.f.io {
             self.err(Diag::new("E-EFFECT", span, format!("'{}' is io; only an 'io fn' may call it", name)));
+        }
+        if self.parfor.is_some() && ctx == Ctx::Code {
+            if sig.io {
+                self.parfor_forbid(span, &format!("calling io fn '{}'", name));
+            } else if sig.ret.is_owned_array() {
+                self.parfor_forbid(span, &format!("calling '{}', which allocates the array it returns,", name));
+            } else if name == self.f.name || self.funcs.get(name).is_some_and(|g| g.decreases.is_some()) {
+                self.parfor_forbid(span, &format!("calling recursive fn '{}'", name));
+            }
         }
         self.args(name, args, span, ctx)
     }
@@ -512,6 +537,9 @@ impl<'a> Checker<'a> {
                 if ty.is_owned_array() && self.ghost_forbid(s, "allocating an array") {
                     return;
                 }
+                if ty.is_owned_array() {
+                    self.parfor_forbid(s.span, "allocating an array");
+                }
                 if ty.is_owned_array() && matches!(init.k, ExprK::Var(_)) {
                     self.err(Diag::new("E-ARRAY", init.span, "arrays cannot be moved between locals; borrow instead"));
                 }
@@ -522,6 +550,12 @@ impl<'a> Checker<'a> {
                 self.declare(name, Local { ty: *ty, mutable: *mutable }, s.span);
             }
             StmtK::Assign { name, path, val } => {
+                if let (Some(d), Some(at)) = (self.parfor, self.scope_of(name)) {
+                    if at < d {
+                        self.err(Diag::new("E-PARFOR", s.span, format!("'{}' is declared outside this 'par for' and assigned inside it: every iteration would share it (a data race and loop-carried state)", name))
+                            .hint("declare it inside the body, or write per-iteration results to an array slot such as out[i]"));
+                    }
+                }
                 let tv = self.expr(val, cx, false);
                 match self.lookup(name) {
                     Some(l) if l.mutable => {
@@ -609,6 +643,7 @@ impl<'a> Checker<'a> {
                 self.want(t, Ty::I64, dec.span, "decreases measure");
                 self.block(body);
             }
+            StmtK::Return(_) if self.parfor.is_some() => self.parfor_forbid(s.span, "'return'"),
             StmtK::Return(e) => match (e, self.f.ret) {
                 (None, Ty::Unit) => {}
                 (None, r) => self.err(Diag::new("E-TYPE", s.span, format!("missing return value of type {}", r.name()))),
@@ -651,6 +686,7 @@ impl<'a> Checker<'a> {
                 if self.ghost_forbid(s, "par") {
                     return;
                 }
+                self.parfor_forbid(s.span, "a nested 'par'");
                 let mut items: Vec<(String, bool, bool, usize)> = vec![];
                 for (bi, b) in branches.iter().enumerate() {
                     self.top = &b.call;
@@ -682,6 +718,26 @@ impl<'a> Checker<'a> {
                         self.declare(n, Local { ty: b.ty, mutable: false }, b.span);
                     }
                 }
+            }
+            StmtK::ParFor { var, lo, hi, ens, body } => {
+                if self.ghost_forbid(s, "par for") {
+                    return;
+                }
+                self.parfor_forbid(s.span, "a nested 'par for'");
+                for b in [lo, hi] {
+                    let t = self.expr(b, Ctx::Code, false);
+                    self.want(t, Ty::I64, b.span, "par for bound");
+                }
+                self.scopes.push(HashMap::new());
+                self.declare(var, Local { ty: Ty::I64, mutable: false }, s.span);
+                for e in ens {
+                    let t = self.expr(e, Ctx::Spec, false);
+                    self.want(t, Ty::Bool, e.span, "par for ensures");
+                }
+                let outer = self.parfor.replace(self.scopes.len());
+                self.block(body);
+                self.parfor = outer;
+                self.scopes.pop();
             }
         }
     }
@@ -793,7 +849,7 @@ pub fn check(prog: &Program, need_main: bool) -> Vec<Diag> {
             diags.push(Diag::new("E-NAME", f.span, format!("function '{}' is already defined", f.name)));
         }
         let ghost = f.kind != FnKind::Code;
-        let mut c = Checker { prog, sigs: &sigs, funcs: &fmap, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false };
+        let mut c = Checker { prog, sigs: &sigs, funcs: &fmap, f, ghost: f.kind == FnKind::Lemma, scopes: vec![HashMap::new()], diags: vec![], calls: HashSet::new(), top: std::ptr::null(), old_ok: false, parfor: None };
         for p in &f.params {
             if let Ty::ArrOf(k) = p.ty {
                 c.err(Diag::new("E-TYPE", p.span, format!("parameter '{}' cannot own an array; take &[{1}] or &mut [{1}]", p.name, k.name())));

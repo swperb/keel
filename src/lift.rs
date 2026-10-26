@@ -64,6 +64,7 @@ fn block_why(funcs: &HashMap<String, &Func>, b: &Block, stack: &mut Vec<String>)
             StmtK::While { .. } => Some("contains a loop".to_string()),
             StmtK::Store { .. } => Some("writes to an array".to_string()),
             StmtK::Par(_) => Some("runs par branches".to_string()),
+            StmtK::ParFor { .. } => Some("contains a par for loop".to_string()),
             StmtK::Match { .. } => Some("contains a match statement".to_string()),
             StmtK::Expr(_) | StmtK::Return(None) => Some("calls a function for its effect".to_string()),
         };
