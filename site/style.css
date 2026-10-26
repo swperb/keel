@@ -233,6 +233,8 @@ h3 {
 
 .section {
   border-bottom: 1px solid var(--rule);
+  /* Keep headings clear of the sticky header when jumping to a section. */
+  scroll-margin-top: 64px;
 }
 
 .section .container {
